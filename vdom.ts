@@ -40,6 +40,35 @@ function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTML
 
 function vdomToRealDom(vtree: VDomNode): void {
   (document.getElementById("vdom") || document.body).replaceChildren(vdomToRealDomRecurse(vtree, document.createElement("div")));
+  lifecycleHooks();
+}
+
+function onUpdate(...rest: any[]) {
+  // if (false /*diff and do nothing on ==*/) return;
+  let callback: (args: typeof rest) => void = () => void 0;
+  return {
+    then: (onFulfilled: (args: typeof rest) => void) => {
+      callback = onFulfilled;
+      return undefined;
+    },
+  };
+}
+
+function lifecycleHooks() {
+  const x = 4,
+    y = 6,
+    z = 2;
+  onUpdate(x, y, z).then(vals => {
+    console.log(vals);
+  });
+
+  onUpdate([x, y, z], vals => {
+    console.log(vals);
+  });
+
+  [x, y, z].onUpdate(vals => {
+    console.log(vals);
+  });
 }
 
 // closure components
@@ -89,21 +118,33 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
 
 let freshVDom: VDomNode | undefined = undefined;
 let topAppComponent: ShallowVDomNode | undefined = undefined;
-let pendingRerender = false;
+let scheduledRerenders = 0;
 
 function start(app: ShallowVDomNode) {
   topAppComponent = app;
-  scheduleRerender();
+  rerender();
 }
 
-async function scheduleRerender() {
-  if (pendingRerender) return;
-  pendingRerender = true;
-  await Promise.resolve(0);
-  pendingRerender = false;
+function scheduleRerender() {
+  scheduledRerenders++;
+  Promise.resolve().then(() => !--scheduledRerenders && rerender());
+}
+
+function rerender() {
+  if (scheduledRerenders) return; // a later promise is already in the queue
   freshVDom = componentToVDom(topAppComponent!, freshVDom);
-  if (pendingRerender) return; // if above line called scheduleRerender(), don't commit to real dom
+  if (scheduledRerenders) return; // if above line called scheduleRerender(), don't commit to real dom
   vdomToRealDom(freshVDom!);
+}
+
+// jsx stand-in
+
+function _jsx(head: ShallowVDomNode["head"], props?: IProps, tail?: ShallowVDomNode[]): ShallowVDomNode {
+  const retval = props || {};
+  retval.head = head;
+  retval.tail = tail;
+  retval.props = props;
+  return retval as ShallowVDomNode;
 }
 
 // sample components
@@ -139,7 +180,7 @@ const MainContent: ComponentDefinition = ({ buttonLabel }, state) => {
     class: "mx-b",
     id: "contentroot",
     tail: [
-      { head: "span", style: "font-weight:bold", textContent: "in a span " + state.counter },
+      { head: "span", style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) },
       { head: "button", type: "button", textContent: buttonLabel, onClick },
     ],
   };
