@@ -5,7 +5,7 @@ interface VDomNode {
   attributes: Record<string, any>;
   children?: VDomNode[];
   state: IState;
-  effects: EffectHolder<any[]>[];
+  effects?: EffectHolder<any[]>[];
   nthEffect: number;
 }
 
@@ -15,7 +15,7 @@ function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTML
   for (const attributeName in vtree.attributes) {
     const attributeValue = vtree.attributes[attributeName];
     if (attributeName.startsWith("on")) {
-      const eventName = attributeName.slice(2).toLowerCase();
+      const eventName = attributeName.slice(2).toLowerCase(); // TODO
       el.addEventListener(eventName, attributeValue);
       el.addEventListener(eventName, scheduleRerender);
     } else
@@ -47,13 +47,13 @@ function vdomToRealDom(vtree: VDomNode): void {
 
 // useEffect ///
 
-type OnDiffHandler<T> = (args: T) => void;
+type OnDiffHandler<T, R = any> = (args: T) => R;
 
 interface EffectHolder<T> {
   oldArgs: T;
   newArgs: T;
   callback: OnDiffHandler<T>;
-  then: (what: OnDiffHandler<T>) => void;
+  then: (what: OnDiffHandler<T>) => any;
 }
 
 const doNothing = () => void 0;
@@ -77,11 +77,15 @@ function onDiff(...newArgs: any[]): EffectHolder<typeof newArgs> {
 
 function afterRendering() {
   for (const vdom of diffsToDo) {
-    for (const effect of vdom.effects) {
-      const somethingChanged = effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
-      effect.oldArgs = effect.newArgs;
-      if (somethingChanged) effect.callback(effect.newArgs);
-    }
+    if (vdom.effects)
+      for (const effect of vdom.effects) {
+        const somethingChanged = effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
+        effect.oldArgs = effect.newArgs;
+        if (somethingChanged) {
+          const retval = effect.callback(effect.newArgs);
+          // retval instanceof Promise ? retval.finally(scheduleRerender) : scheduleRerender(); // TODO this might be right
+        }
+      }
   }
   diffsToDo.clear();
 }
@@ -105,7 +109,7 @@ interface ShallowVDomNode extends Record<string, any> {
 let currentVDomNode: VDomNode;
 
 function newEmptyVDom(): VDomNode {
-  return { tag: "", attributes: {}, state: {}, effects: [], nthEffect: -1 };
+  return { tag: "", attributes: {}, state: {}, nthEffect: -1 };
 }
 
 function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomNode {
@@ -198,7 +202,8 @@ const MainContent: ComponentDefinition = ({ buttonLabel }, state) => {
 
   if (!(state.counter % 3)) state.triple = state.triple ? state.triple + 1 : 1;
 
-  onDiff(state.triple).then(vals => {
+  onDiff(state.triple).then(async vals => {
+    await Promise.resolve(0);
     console.log("USEEFFECT 3rd", vals, "counter=", state.counter);
   });
 
