@@ -5,6 +5,8 @@ interface VDomNode {
   attributes: Record<string, any>;
   children?: VDomNode[];
   state: IState;
+  effects: EffectHolder<any[]>[];
+  nthEffect: number;
 }
 
 function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTMLElement {
@@ -40,38 +42,48 @@ function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTML
 
 function vdomToRealDom(vtree: VDomNode): void {
   (document.getElementById("vdom") || document.body).replaceChildren(vdomToRealDomRecurse(vtree, document.createElement("div")));
-  // lifecycleHooks();
+  afterRendering();
 }
+
+// useEffect ///
 
 type OnDiffHandler<T> = (args: T) => void;
 
 interface EffectHolder<T> {
   oldArgs: T;
+  newArgs: T;
   callback: OnDiffHandler<T>;
   then: (what: OnDiffHandler<T>) => void;
 }
 
 const doNothing = () => void 0;
 
-function onDiff(...newArgs: any[]) {
-  if (!currentVDomNode.state.effects) {
-    currentVDomNode.state.effects = { oldArgs: [], callback: doNothing } as any;
-    currentVDomNode.state.effects.then = (what: OnDiffHandler<typeof newArgs>) => (currentVDomNode.state.effects.callback = what);
-  }
-  const oldObj = currentVDomNode.state.effects as EffectHolder<typeof newArgs>;
-  if (oldObj.oldArgs.some((arg, i) => !Object.is(arg, newArgs[i]))) Promise.resolve().then(() => oldObj.callback(newArgs));
-  oldObj.oldArgs = newArgs;
-  return oldObj;
+let diffsToDo = new Set<VDomNode>();
+
+function newEmptyEffect(): EffectHolder<any[]> {
+  const effect = { oldArgs: [], callback: doNothing } as any;
+  effect.then = (what: OnDiffHandler<any[]>) => (effect.callback = what);
+  return effect;
 }
 
-function lifecycleHooks() {
-  const x = 4,
-    y = 6,
-    z = 2;
+function onDiff(...newArgs: any[]): EffectHolder<typeof newArgs> {
+  if (!currentVDomNode.effects) currentVDomNode.effects = [];
+  const i = ++currentVDomNode.nthEffect;
+  if (!currentVDomNode.effects[i]) currentVDomNode.effects[i] = newEmptyEffect();
+  currentVDomNode.effects[i].newArgs = newArgs;
+  diffsToDo.add(currentVDomNode);
+  return currentVDomNode.effects[i];
+}
 
-  onDiff(x, y, z).then(vals => {
-    console.log({ vals });
-  });
+function afterRendering() {
+  for (const vdom of diffsToDo) {
+    for (const effect of vdom.effects) {
+      const somethingChanged = effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
+      effect.oldArgs = effect.newArgs;
+      if (somethingChanged) effect.callback(effect.newArgs);
+    }
+  }
+  diffsToDo.clear();
 }
 
 // closure components
@@ -92,8 +104,13 @@ interface ShallowVDomNode extends Record<string, any> {
 
 let currentVDomNode: VDomNode;
 
+function newEmptyVDom(): VDomNode {
+  return { tag: "", attributes: {}, state: {}, effects: [], nthEffect: -1 };
+}
+
 function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomNode {
-  oldReturnValue ||= { tag: "", attributes: {}, state: {} };
+  oldReturnValue ||= newEmptyVDom();
+  oldReturnValue.nthEffect = -1;
   currentVDomNode = oldReturnValue;
   const compFn = typeof sel.head == "function" ? sel.head : () => sel;
   const shallowdom = compFn(sel.props || {}, oldReturnValue.state);
