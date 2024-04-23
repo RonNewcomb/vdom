@@ -40,34 +40,37 @@ function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTML
 
 function vdomToRealDom(vtree: VDomNode): void {
   (document.getElementById("vdom") || document.body).replaceChildren(vdomToRealDomRecurse(vtree, document.createElement("div")));
-  lifecycleHooks();
+  // lifecycleHooks();
 }
 
-function onUpdate(...rest: any[]) {
-  // if (false /*diff and do nothing on ==*/) return;
-  let callback: (args: typeof rest) => void = () => void 0;
-  return {
-    then: (onFulfilled: (args: typeof rest) => void) => {
-      callback = onFulfilled;
-      return undefined;
-    },
-  };
+type OnDiffHandler<T> = (args: T) => void;
+
+interface EffectHolder<T> {
+  oldArgs: T;
+  callback: OnDiffHandler<T>;
+  then: (what: OnDiffHandler<T>) => void;
+}
+
+const doNothing = () => void 0;
+
+function onDiff(...newArgs: any[]) {
+  if (!currentVDomNode.state.effects) {
+    currentVDomNode.state.effects = { oldArgs: [], callback: doNothing } as any;
+    currentVDomNode.state.effects.then = (what: OnDiffHandler<typeof newArgs>) => (currentVDomNode.state.effects.callback = what);
+  }
+  const oldObj = currentVDomNode.state.effects as EffectHolder<typeof newArgs>;
+  if (oldObj.oldArgs.some((arg, i) => !Object.is(arg, newArgs[i]))) Promise.resolve().then(() => oldObj.callback(newArgs));
+  oldObj.oldArgs = newArgs;
+  return oldObj;
 }
 
 function lifecycleHooks() {
   const x = 4,
     y = 6,
     z = 2;
-  onUpdate(x, y, z).then(vals => {
-    console.log(vals);
-  });
 
-  onUpdate([x, y, z], vals => {
-    console.log(vals);
-  });
-
-  [x, y, z].onUpdate(vals => {
-    console.log(vals);
+  onDiff(x, y, z).then(vals => {
+    console.log({ vals });
   });
 }
 
@@ -87,8 +90,11 @@ interface ShallowVDomNode extends Record<string, any> {
   props?: IProps;
 }
 
+let currentVDomNode: VDomNode;
+
 function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomNode {
   oldReturnValue ||= { tag: "", attributes: {}, state: {} };
+  currentVDomNode = oldReturnValue;
   const compFn = typeof sel.head == "function" ? sel.head : () => sel;
   const shallowdom = compFn(sel.props || {}, oldReturnValue.state);
   oldReturnValue.attributes = shallowdom;
@@ -103,9 +109,7 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
   }
 
   // recurse
-  oldReturnValue.children = (shallowdom.tail || []).map((child, i) => {
-    return componentToVDom(child, oldReturnValue!.children?.[i]);
-  });
+  oldReturnValue.children = (shallowdom.tail || []).map((child, i) => componentToVDom(child, oldReturnValue!.children?.[i]));
   delete oldReturnValue.attributes.tail;
 
   if (typeof shallowdom.head === "string") {
@@ -175,12 +179,18 @@ const MainContent: ComponentDefinition = ({ buttonLabel }, state) => {
     alert("counter at " + state.counter);
   };
 
+  if (!(state.counter % 3)) state.triple = state.triple ? state.triple + 1 : 1;
+
+  onDiff(state.triple).then(vals => {
+    console.log("USEEFFECT 3rd", vals, "counter=", state.counter);
+  });
+
   return <ShallowVDomNode>{
     head: "div",
     class: "mx-b",
     id: "contentroot",
     tail: [
-      { head: "span", style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) },
+      { head: "span", style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) + " triple " + state.triple },
       { head: "button", type: "button", textContent: buttonLabel, onClick },
     ],
   };
