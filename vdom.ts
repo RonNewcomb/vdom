@@ -7,15 +7,21 @@ interface VDomNode {
   state: IState;
   effects?: EffectHolder<any[]>[];
   nthEffect: number;
+  statefulElements?: Record<number, HTMLElement>;
 }
 
 function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTMLElement {
-  const el = document.createElement(vtree.tag);
+  const elName = vtree.attributes.name;
+  if (elName) {
+    if (!vtree.statefulElements) vtree.statefulElements = {};
+    if (!vtree.statefulElements[elName]) vtree.statefulElements[elName] = document.createElement(vtree.tag);
+  }
+  const el = elName ? vtree.statefulElements![elName] : document.createElement(vtree.tag);
   parentElement.appendChild(el);
   for (const attributeName in vtree.attributes) {
     const attributeValue = vtree.attributes[attributeName];
     if (attributeName.startsWith("on")) {
-      const eventName = attributeName.slice(2).toLowerCase(); // TODO
+      const eventName = attributeName.slice(2).toLowerCase();
       el.addEventListener(eventName, attributeValue);
       el.addEventListener(eventName, scheduleRerender);
     } else
@@ -30,6 +36,9 @@ function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTML
         case "children":
         case "childNodes":
         case "tail":
+          break;
+        case "value":
+          el.setAttribute(attributeName, attributeValue); // attribute because property would erase user's current value
           break;
         default:
           el.setAttribute(attributeName, attributeValue);
@@ -177,7 +186,7 @@ function _jsx(head: ShallowVDomNode["head"], props?: IProps, tail?: ShallowVDomN
 const Writer: ComponentDefinition = (props, state) => {
   console.log("Writer invoked");
   const message = "hello world ";
-  return <ShallowVDomNode>{ head: "span", textContent: message };
+  return <ShallowVDomNode>{ head: "input", value: message, name: "rememberme" };
 };
 Writer.testid = "writer";
 
