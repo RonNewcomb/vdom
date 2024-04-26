@@ -5,13 +5,13 @@ interface VDomNode {
   attributes: Record<string, any>;
   children?: VDomNode[];
   state: IState;
-  effects?: EffectHolder<any[]>[];
+  effects?: DiffEffectHolder<any[], any[]>[] | RefEffectHolder<any[], any[]>[];
   nthEffect: number;
-  statefulElements?: Record<number, HTMLElement>;
+  statefulElements?: Record<string, HTMLElement>;
 }
 
 function vdomToRealDomRecurse(vtree: VDomNode, parentElement: HTMLElement): HTMLElement {
-  const elName = vtree.attributes.name;
+  const elName = vtree.attributes.name as string;
   if (elName) {
     if (!vtree.statefulElements) vtree.statefulElements = {};
     if (!vtree.statefulElements[elName]) vtree.statefulElements[elName] = document.createElement(vtree.tag);
@@ -56,47 +56,82 @@ function vdomToRealDom(vtree: VDomNode): void {
 
 // useEffect ///
 
-type OnDiffHandler<T, R = any> = (args: T) => R;
+type OnDiffHandler<T, R = any> = (args: T, state: any) => R;
+type OnRefHandler<T, R = any> = (elementRefs: Record<string, HTMLElement>, args: T, state: any, rerenderFn: () => void) => R;
 
-interface EffectHolder<T> {
+// interface EffectHolder<T, R> {
+//   effectType: "diff" | "elRef";
+//   oldArgs: T;
+//   newArgs: T;
+//   callback: OnDiffHandler<T, R>;
+//   then: (what: OnDiffHandler<T, R>) => any;
+// }
+
+type EffectHolder<T, R = any> = DiffEffectHolder<T, R> | RefEffectHolder<T, R>;
+
+interface DiffEffectHolder<T, R = any> {
+  effectType: "diff";
   oldArgs: T;
   newArgs: T;
-  callback: OnDiffHandler<T>;
-  then: (what: OnDiffHandler<T>) => any;
+  callback: OnDiffHandler<T, R>;
+  then: (what: OnDiffHandler<T, R>) => any;
+}
+
+interface RefEffectHolder<T, R = any> {
+  effectType: "elRef";
+  oldArgs: T;
+  newArgs: T;
+  callback: OnRefHandler<T, R>;
+  then: (what: OnRefHandler<T>) => any;
 }
 
 const doNothing = () => void 0;
 
-let diffsToDo = new Set<VDomNode>();
+let effectsToRun = new Set<VDomNode>();
 
-function newEmptyEffect(): EffectHolder<any[]> {
-  const effect = { oldArgs: [], callback: doNothing } as any;
+function newEmptyEffect(effectType: EffectHolder<any, any>["effectType"]): EffectHolder<any[], any> {
+  const effect = { effectType, oldArgs: [NaN], callback: doNothing } as any;
   effect.then = (what: OnDiffHandler<any[]>) => (effect.callback = what);
   return effect;
 }
 
-function onDiff(...newArgs: any[]): EffectHolder<typeof newArgs> {
+function onSomething(effectType: EffectHolder<any, any>["effectType"], ...newArgs: any[]) {
   if (!currentVDomNode.effects) currentVDomNode.effects = [];
   const i = ++currentVDomNode.nthEffect;
-  if (!currentVDomNode.effects[i]) currentVDomNode.effects[i] = newEmptyEffect();
+  if (!currentVDomNode.effects[i]) currentVDomNode.effects[i] = newEmptyEffect(effectType);
   currentVDomNode.effects[i].newArgs = newArgs;
-  diffsToDo.add(currentVDomNode);
+  effectsToRun.add(currentVDomNode);
   return currentVDomNode.effects[i];
 }
 
+function onDiff(...newArgs: any[]): DiffEffectHolder<typeof newArgs> {
+  return onSomething("diff", ...newArgs) as DiffEffectHolder<typeof newArgs>;
+}
+
+function onReady(...newArgs: any[]): RefEffectHolder<typeof newArgs> {
+  return onSomething("elRef", ...newArgs) as RefEffectHolder<typeof newArgs>;
+}
+
 function afterRendering() {
-  for (const vdom of diffsToDo) {
+  for (const vdom of effectsToRun) {
     if (vdom.effects)
       for (const effect of vdom.effects) {
-        const somethingChanged = effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
+        const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
         effect.oldArgs = effect.newArgs;
         if (somethingChanged) {
-          const retval = effect.callback(effect.newArgs);
-          // retval instanceof Promise ? retval.finally(scheduleRerender) : scheduleRerender(); // TODO this might be right
+          switch (effect.effectType) {
+            case "diff":
+              const retval = (effect.callback as OnDiffHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state);
+              // retval instanceof Promise ? retval.finally(scheduleRerender) : scheduleRerender(); // TODO this might be right
+              break;
+            case "elRef":
+              (effect.callback as OnRefHandler<typeof effect.newArgs>)(vdom.statefulElements || {}, effect.newArgs, vdom.state, scheduleRerender);
+              break;
+          }
         }
       }
   }
-  diffsToDo.clear();
+  effectsToRun.clear();
 }
 
 // closure components
@@ -159,7 +194,7 @@ function start(app: ShallowVDomNode) {
   rerender();
 }
 
-function scheduleRerender() {
+function scheduleRerender(): void {
   scheduledRerenders++;
   Promise.resolve().then(() => !--scheduledRerenders && rerender());
 }
@@ -173,12 +208,15 @@ function rerender() {
 
 // jsx stand-in
 
-function _jsx(head: ShallowVDomNode["head"], props?: IProps, tail?: ShallowVDomNode[]): ShallowVDomNode {
-  const retval = props || {};
-  retval.head = head;
-  retval.tail = tail;
-  retval.props = props;
-  return retval as ShallowVDomNode;
+declare namespace JSX {
+  interface IntrinsicElements extends Partial<HTMLElementTagNameMap> {}
+  // interface ElementChildrenAttribute { children: JSX.IntrinsicElements[]; }
+}
+
+function _jsx(head: ShallowVDomNode["head"], props?: IProps, ...tail: ShallowVDomNode[]): ShallowVDomNode {
+  const retval: ShallowVDomNode = { ...props, head, tail, props };
+  // console.log(JSON.stringify(retval));
+  return retval;
 }
 
 // sample components
@@ -186,12 +224,30 @@ function _jsx(head: ShallowVDomNode["head"], props?: IProps, tail?: ShallowVDomN
 const Writer: ComponentDefinition = (props, state) => {
   console.log("Writer invoked");
   const message = "hello world ";
-  return <ShallowVDomNode>{ head: "input", value: message, name: "rememberme" };
+
+  onReady().then((elements, args, state, rerenderFn) => {
+    console.log("REF ELEMENTS", { elements, args, state });
+    elements.rememberme.focus();
+    state.elements = elements;
+  });
+
+  // onDiff(state.local).then(args => {
+  //   console.log("ondiff local", args);
+  //   console.log("ondiff state el", state.elements?.rememberme.value);
+  // });
+
+  // const handler = e => {
+  //   // state.local = e.target.value;
+  //   // console.log("From event,", state.local);
+  // };
+
+  return <input name="rememberme" value={message} />;
+  //  return { head: "input", value: message, name: "rememberme" };
 };
 Writer.testid = "writer";
 
 const MainMenu: ComponentDefinition = (props, state) => {
-  return <ShallowVDomNode>{
+  return {
     head: "ul",
     tail: [
       { head: "li", textContent: "item 1" },
@@ -211,12 +267,21 @@ const MainContent: ComponentDefinition = ({ buttonLabel }, state) => {
 
   if (!(state.counter % 3)) state.triple = state.triple ? state.triple + 1 : 1;
 
-  onDiff(state.triple).then(async vals => {
+  onDiff(state.triple).then(async ([triple], state) => {
     await Promise.resolve(0);
-    console.log("USEEFFECT 3rd", vals, "counter=", state.counter);
+    console.log("USEEFFECT 3rd", triple, "counter=", state.counter);
   });
 
-  return <ShallowVDomNode>{
+  // return (
+  //   <div className="mx-b" id="contentroot">
+  //     <span style={{ fontWeight: "bold" }}>{"in a span " + (state.counter || 0) + " triple " + state.triple}</span>
+  //     <button type="button" onclick={onClick}>
+  //       {buttonLabel}
+  //     </button>
+  //   </div>
+  // );
+
+  return {
     head: "div",
     class: "mx-b",
     id: "contentroot",
@@ -229,24 +294,16 @@ const MainContent: ComponentDefinition = ({ buttonLabel }, state) => {
 
 const Layout: ComponentDefinition = ({ buttonLabel }, state) => {
   console.log("Layout.props", buttonLabel);
-  return <ShallowVDomNode>{ head: "div", tail: [{ head: MainMenu }, { head: MainContent, props: { buttonLabel } }] };
+  //return { head: "div", tail: [{ head: MainMenu }, { head: MainContent, props: { buttonLabel } }] };
+  return (
+    <div>
+      <MainMenu />
+      <MainContent buttonLabel={buttonLabel} />
+    </div>
+  );
 };
 Layout.testid = "layout";
 
 ////
 
-start({ head: Layout, props: { buttonLabel: "Pushe`" }, style: "background-color:blue" });
-
-//////
-
-// const sampleTree: VDomNode = {
-//   tag: "div",
-//   state: {},
-//   attributes: { class: "mx-b", id: "root" },
-//   children: [
-//     { tag: "span", attributes: { style: "font-weight:bold", textContent: "in a span" }, state: {} },
-//     { tag: "button", attributes: { type: "button", textContent: "Click Me", onClick: "alert('foo')" }, state: {} },
-//   ],
-// };
-
-//vdomToRealDom(sampleTree);
+start(<Layout buttonLabel="Pushe`" style="background-color:blue" />);
