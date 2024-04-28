@@ -31,7 +31,7 @@ function vdomToRealDomRecurse(vtree: VDomNode, parentElement: Node): Node {
       const eventName = attributeName.slice(2).toLowerCase();
       el.addEventListener(eventName, attributeValue);
       el.addEventListener(eventName, scheduleRerender);
-    } else
+    } else {
       switch (attributeName) {
         case "textContent":
           el.append(attributeValue);
@@ -67,6 +67,7 @@ function vdomToRealDomRecurse(vtree: VDomNode, parentElement: Node): Node {
           el.setAttribute(attributeName, attributeValue);
           break;
       }
+    }
   }
   if (vtree.children?.length) for (const child of vtree.children) vdomToRealDomRecurse(child, el);
   return el;
@@ -166,7 +167,7 @@ type IProps = Record<any, any>;
 type IState = Record<any, any>;
 
 interface ComponentDefinition<P extends IProps = IProps, S extends IState = IState> {
-  (props: P, state: S): ShallowVDomNode<P, S> | null | undefined;
+  (props: P, state: S, children?: any[]): ShallowVDomNode<P, S> | null | undefined;
   testid?: string;
 }
 
@@ -234,7 +235,7 @@ function rerender() {
 // jsx stand-in
 
 type EachValuePartial<Type> = {
-  [Property in keyof Type]: Partial<Type[Property] & { style?: Partial<CSSStyleDeclaration> }>;
+  [Property in keyof Type]: Partial<Type[Property] | { style?: string }>;
 };
 
 declare namespace JSX {
@@ -342,7 +343,7 @@ function MainContent({ buttonLabel }: { buttonLabel: string }, state: Record<str
   };
 }
 
-function Layout({ buttonLabel, style }: { buttonLabel: string; style: CSSStyleDeclaration }): ShallowVDomNode {
+function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): ShallowVDomNode {
   console.log("Layout.props", buttonLabel, style);
   //return { head: "div", tail: [{ head: MainMenu }, { head: MainContent, props: { buttonLabel } }] };
   return (
@@ -355,4 +356,4 @@ function Layout({ buttonLabel, style }: { buttonLabel: string; style: CSSStyleDe
 
 ////
 
-start(<Layout buttonLabel="Pushe`" style={{ backgroundColor: "blue" }} />);
+start(<Layout buttonLabel="Pushe`" style="background-color: blue" />);
