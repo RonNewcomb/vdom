@@ -1,9 +1,9 @@
-// virtual dom
+// virtual dom ////////////
 
 interface VDomNode {
   tag: HTMLElement["tagName"];
   attributes?: Record<string, any>;
-  children?: VDomNode[];
+  children?: (VDomNode | undefined)[];
   state: IState;
   effects?: DiffEffectHolder<any[], any[]>[] | RefEffectHolder<any[], any[]>[];
   nthEffect: number;
@@ -13,12 +13,10 @@ interface VDomNode {
 const ifNotNode: Node = document.createComment("!iff");
 const nullNode: Node = document.createComment("null");
 
-function vdomToRealDomRecurse(vtree: VDomNode, parentElement: Node): Node {
-  if (!vtree.tag) return parentElement.appendChild(nullNode);
+function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement: Node): Node {
+  if (!vtree || !vtree.tag) return parentElement.appendChild(nullNode);
   const elName = vtree.attributes?.name as string;
-  if (vtree.attributes && !vtree.attributes.iff && Object.hasOwn(vtree.attributes, "iff")) {
-    return parentElement.appendChild(ifNotNode);
-  }
+  if (vtree.attributes && !vtree.attributes.iff && Object.hasOwn(vtree.attributes, "iff")) return parentElement.appendChild(ifNotNode);
   if (elName) {
     if (!vtree.statefulElements) vtree.statefulElements = {};
     if (!vtree.statefulElements[elName]) vtree.statefulElements[elName] = document.createElement(vtree.tag);
@@ -81,19 +79,10 @@ function vdomToRealDom(vtree: VDomNode): void {
   afterRendering();
 }
 
-// useEffect ///
+// useEffect ////////////
 
 type OnDiffHandler<T, R = any> = (args: T, state: any) => R;
 type OnRefHandler<T, R = any> = (elementRefs: Record<string, HTMLElement>, args: T, state: any, rerenderFn: () => void) => R;
-
-// interface EffectHolder<T, R> {
-//   effectType: "diff" | "elRef";
-//   oldArgs: T;
-//   newArgs: T;
-//   callback: OnDiffHandler<T, R>;
-//   then: (what: OnDiffHandler<T, R>) => any;
-// }
-
 type EffectHolder<T, R = any> = DiffEffectHolder<T, R> | RefEffectHolder<T, R>;
 
 interface DiffEffectHolder<T, R = any> {
@@ -111,8 +100,6 @@ interface RefEffectHolder<T, R = any> {
   callback: OnRefHandler<T, R>;
   then: (what: OnRefHandler<T>) => any;
 }
-
-const doNothing = () => void 0;
 
 let effectsToRun = new Set<VDomNode>();
 
@@ -144,11 +131,17 @@ function afterRendering() {
     if (vdom.effects)
       for (const effect of vdom.effects) {
         const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
+        const old = effect.oldArgs;
         effect.oldArgs = effect.newArgs;
         if (somethingChanged) {
+          console.log("diff", vdom.tag, old, effect.newArgs);
           switch (effect.effectType) {
             case "diff":
               const retval = (effect.callback as OnDiffHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state);
+              if (retval instanceof Promise) {
+                console.log("ASYNC");
+                // retval.finally(scheduleRerender);
+              }
               // retval instanceof Promise ? retval.finally(scheduleRerender) : scheduleRerender(); // TODO this might be right
               break;
             case "elRef":
@@ -161,13 +154,13 @@ function afterRendering() {
   effectsToRun.clear();
 }
 
-// closure components
+// closure components ////////////
 
 type IProps = Record<any, any>;
 type IState = Record<any, any>;
 
 interface ComponentDefinition<P extends IProps = IProps, S extends IState = IState> {
-  (props: P, state: S, children?: any[]): ShallowVDomNode<P, S> | null | undefined;
+  (props: P, state: S, children?: any[]): ShallowVDomNode<P, S> | null | undefined; //| Promise<ShallowVDomNode<P, S> | null | undefined>;
   testid?: string;
 }
 
@@ -183,12 +176,22 @@ function newEmptyVDom(): VDomNode {
   return { tag: "", attributes: {}, state: {}, nthEffect: -1 };
 }
 
-function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomNode {
+function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomNode | undefined {
   oldReturnValue ||= newEmptyVDom();
   oldReturnValue.nthEffect = -1;
   currentVDomNode = oldReturnValue;
   const compFn = typeof sel.head == "function" ? sel.head : () => sel;
-  const shallowdom: ShallowVDomNode = compFn(sel.propsOrAttributes || {}, oldReturnValue.state, sel.tail) ?? { head: "" };
+  const shallowdom: ShallowVDomNode | Promise<any> = compFn(sel.propsOrAttributes || {}, oldReturnValue.state, sel.tail) ?? { head: "" };
+  if (shallowdom instanceof Promise) {
+    if (!shallowdom.status) {
+      shallowdom.status = 1;
+      shallowdom.finally(() => {
+        shallowdom.status = 2;
+        scheduleRerender();
+      });
+    }
+    return oldReturnValue;
+  }
   oldReturnValue.attributes = shallowdom.propsOrAttributes;
 
   // data-testid
@@ -232,7 +235,7 @@ function rerender() {
   vdomToRealDom(freshVDom!);
 }
 
-// jsx stand-in
+// jsx stand-in ////////////
 
 type EachValuePartial<Type> = {
   [Property in keyof Type]: Partial<Type[Property] | { style?: string }>;
@@ -248,7 +251,11 @@ function jsx(head: ShallowVDomNode["head"], propsOrAttributes?: IProps, ...tail:
   return retval;
 }
 
-// sample components
+// utility ////////////
+
+const doNothing = () => void 0;
+
+const wait = (milliseconds = 0) => new Promise(r => setTimeout(r, milliseconds));
 
 function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
   const retval = { ...svNode, propsOrAttributes: { ...svNode.propsOrAttributes } };
@@ -257,16 +264,16 @@ function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
   return retval;
 }
 
+// sample components ////////////
+
 function For(props: { each: any[] }, state: IState, children: ShallowVDomNode[]): ShallowVDomNode | undefined {
-  console.log("<For />", props, state, children);
-
+  //console.log("<For />", props, state, children);
   const stampedOut = props.each.flatMap(value => children.map(child => cloneAndStamp(child, value)));
-
   return { head: "div", tail: stampedOut, propsOrAttributes: { class: "lkj" } };
 }
 
 function Writer(): ShallowVDomNode {
-  console.log("Writer invoked");
+  //console.log("Writer invoked");
   const message = "hello world ";
 
   onReady().then((elements, args, state, rerenderFn) => {
@@ -307,14 +314,11 @@ function MainMenu(): ShallowVDomNode {
 }
 
 function MainContent({ buttonLabel }: { buttonLabel: string }, state: Record<string, any>): ShallowVDomNode {
-  console.log("MainContent.props.buttonLabel", buttonLabel);
-
   const onClick = () => {
     state.counter = (state.counter || 0) + 1;
     alert("counter at " + state.counter);
+    if (!(state.counter % 3)) state.triple = state.triple ? state.triple + 1 : 1;
   };
-
-  if (!(state.counter % 3)) state.triple = state.triple ? state.triple + 1 : 1;
 
   onDiff(state.triple).then(async ([triple], state) => {
     await Promise.resolve(0);
@@ -343,11 +347,29 @@ function MainContent({ buttonLabel }: { buttonLabel: string }, state: Record<str
   };
 }
 
+async function Eventually(): Promise<ShallowVDomNode> {
+  await wait(3000);
+  return <h2>Here!</h2>;
+}
+
+function OldEventually(props: IProps, state: IState): ShallowVDomNode {
+  onDiff().then(async () => {
+    console.log("FETCHING...");
+    state.retval = <div>fetching...</div>;
+    await wait(3000);
+    console.log("FETCHED");
+    state.retval = <h2>Here!</h2>;
+  });
+
+  console.log("state.retval=", state.retval);
+  return state.retval;
+}
+
 function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): ShallowVDomNode {
-  console.log("Layout.props", buttonLabel, style);
   //return { head: "div", tail: [{ head: MainMenu }, { head: MainContent, props: { buttonLabel } }] };
   return (
     <div style={style}>
+      <OldEventually />
       <MainMenu />
       <MainContent buttonLabel={buttonLabel} />
     </div>
@@ -356,4 +378,4 @@ function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }):
 
 ////
 
-start(<Layout buttonLabel="Pushe`" style="background-color: blue" />);
+start(<Layout buttonLabel="Push me" style="background-color: blue" />);
