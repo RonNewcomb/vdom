@@ -14,7 +14,7 @@ const ifNotNode: Node = document.createComment("!iff");
 const nullNode: Node = document.createComment("null");
 
 function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement: Node): Node {
-  if (primitives.includes(typeof vtree)) return parentElement.appendChild(document.createTextNode(vtree as any));
+  if (primitiveTypes.includes(typeof vtree)) return parentElement.appendChild(document.createTextNode(vtree as any));
   if (!vtree || !vtree.tag) return parentElement.appendChild(nullNode);
   const elName = vtree.attributes?.name as string;
   if (vtree.attributes && !vtree.attributes.iff && Object.hasOwn(vtree.attributes, "iff")) return parentElement.appendChild(ifNotNode);
@@ -40,7 +40,6 @@ function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement:
           break;
         case "iff":
         case "props":
-        case "propsOrAttributes":
           break;
         case "tag":
         case "tagName":
@@ -161,8 +160,10 @@ function afterRendering() {
 type IProps = Record<any, any>;
 type IState = Record<any, any>;
 
+type Primitives = boolean | undefined | null | string | number | bigint;
+
 interface ComponentDefinition<P extends IProps = IProps, S extends IState = IState> {
-  (props: P, state: S, children?: any[]): ShallowVDomNode<P, S> | null | undefined | Promise<ShallowVDomNode<P, S> | null | undefined>;
+  (props: P, state: S, children?: any[]): ShallowVDomNode<P, S> | Primitives | Promise<ShallowVDomNode<P, S> | Primitives>;
   testid?: string;
 }
 
@@ -176,10 +177,10 @@ const tail = Symbol("tail");
 interface ShallowVDomNode<P extends IProps = IProps, S extends IState = IState> {
   [head]: HTMLElement["tagName"] | ComponentDefinition<P, S> | undefined | null | "";
   [tail]?: ShallowVDomNode[];
-  propsOrAttributes?: P;
+  [key: string]: any;
 }
 
-const primitives = ["bigint", "string", "symbol", "boolean", "number", "undefined", "null", "array"];
+const primitiveTypes = ["bigint", "string", "symbol", "boolean", "number", "undefined", "null", "array"];
 
 let currentVDomNode: VDomNode;
 
@@ -192,7 +193,7 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
   oldReturnValue.nthEffect = -1;
   currentVDomNode = oldReturnValue;
   const compFn = typeof sel[head] == "function" ? sel[head] : () => sel;
-  let shallowdom = compFn(sel.propsOrAttributes || {}, oldReturnValue.state, sel[tail]) ?? { [head]: "" };
+  let shallowdom = compFn(sel, oldReturnValue.state, sel[tail]) ?? { [head]: "" };
   // console.log({ shallowdom });
   if (shallowdom instanceof Promise) {
     if (oldReturnValue.state.render) shallowdom = oldReturnValue.state.render as ShallowVDomNode;
@@ -209,7 +210,14 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
     } else return oldReturnValue;
     // console.log("continuing with ", { shallowdom });
   }
-  oldReturnValue.attributes = shallowdom.propsOrAttributes;
+  if (typeof shallowdom === "string") return shallowdom as any;
+  if (typeof shallowdom === "boolean") return shallowdom as any;
+  if (typeof shallowdom === "number") return shallowdom as any;
+  if (typeof shallowdom === "bigint") return shallowdom as any;
+  if (typeof shallowdom === "symbol") return shallowdom as any;
+  if (typeof shallowdom === "undefined") return shallowdom as any;
+  if (Array.isArray(shallowdom)) return shallowdom as any;
+  oldReturnValue.attributes = shallowdom;
 
   // data-testid
   if (typeof sel[head] == "function") {
@@ -223,7 +231,7 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
 
   // recurse
   oldReturnValue.children = (shallowdom[tail] || []).map((child, i) =>
-    primitives.includes(typeof child) ? (child as any) : componentToVDom(child, oldReturnValue!.children?.[i])
+    primitiveTypes.includes(typeof child) ? (child as any) : componentToVDom(child, oldReturnValue!.children?.[i])
   );
 
   if (typeof shallowdom[head] === "string") {
@@ -264,8 +272,8 @@ declare namespace JSX {
   type IntrinsicElements = EachValuePartial<HTMLElementTagNameMap>;
 }
 
-function jsx(tag: ShallowVDomNode[typeof head], propsOrAttributes?: IProps, ...rest: ShallowVDomNode[]): ShallowVDomNode {
-  const retval: ShallowVDomNode = { [head]: tag, [tail]: rest, propsOrAttributes };
+function jsx(tag: ShallowVDomNode[typeof head], propsOrAttributes: IProps, ...rest: ShallowVDomNode[]): ShallowVDomNode {
+  const retval: ShallowVDomNode = { [head]: tag, [tail]: rest, ...propsOrAttributes };
   // console.log(JSON.stringify(retval));
   return retval;
 }
@@ -277,9 +285,9 @@ const doNothing = () => void 0;
 const wait = (milliseconds = 0) => new Promise(r => setTimeout(r, milliseconds));
 
 function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
-  const retval = { ...svNode, propsOrAttributes: { ...svNode.propsOrAttributes } };
-  retval.propsOrAttributes.if = true;
-  retval.propsOrAttributes.name = value;
+  const retval = { ...svNode };
+  retval.if = true;
+  retval.name = value;
   return retval;
 }
 
@@ -288,7 +296,7 @@ function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
 function For(props: { each: any[] }, state: IState, children: ShallowVDomNode[]): ShallowVDomNode | undefined {
   //console.log("<For />", props, state, children);
   const stampedOut = props.each.flatMap(value => children.map(child => cloneAndStamp(child, value)));
-  return { [head]: "div", [tail]: stampedOut, propsOrAttributes: { class: "lkj" } };
+  return { [head]: "div", [tail]: stampedOut, class: "lkj" };
 }
 
 function Writer(): ShallowVDomNode {
@@ -320,14 +328,14 @@ function MainMenu(): ShallowVDomNode {
   return {
     [head]: "menu",
     [tail]: [
-      { [head]: "div", propsOrAttributes: { textContent: "item 1 if:false", if: false } },
-      { [head]: "div", propsOrAttributes: { textContent: "item 2 if:true", if: true } },
+      { [head]: "div", textContent: "item 1 if:false", if: false },
+      { [head]: "div", textContent: "item 2 if:true", if: true },
       { [head]: "div", [tail]: [{ [head]: Writer }] },
-      { [head]: "div", propsOrAttributes: { textContent: "item 4 if:50%", if: Math.random() < 0.5 } },
-      { [head]: "div", propsOrAttributes: { textContent: "item 5 iff:50%", iff: Math.random() < 0.5 } },
-      { [head]: "div", propsOrAttributes: { textContent: "item 6 iff:false", iff: false } },
-      { [head]: "div", propsOrAttributes: { textContent: "item 7 iff:true", iff: true } },
-      { [head]: For, propsOrAttributes: { each: [0, 1] }, [tail]: [{ [head]: "div", propsOrAttributes: { "data-testid": "looped", class: "looper" } }] },
+      { [head]: "div", textContent: "item 4 if:50%", if: Math.random() < 0.5 },
+      { [head]: "div", textContent: "item 5 iff:50%", iff: Math.random() < 0.5 },
+      { [head]: "div", textContent: "item 6 iff:false", iff: false },
+      { [head]: "div", textContent: "item 7 iff:true", iff: true },
+      { [head]: For, each: [0, 1], [tail]: [{ [head]: "div", "data-testid": "looped", class: "looper" }] },
     ],
   };
 }
@@ -355,13 +363,11 @@ function MainContent({ buttonLabel }: { buttonLabel: string }, state: Record<str
 
   return {
     [head]: "main",
-    propsOrAttributes: {
-      class: "mx-b",
-      id: "contentroot",
-    },
+    class: "mx-b",
+    id: "contentroot",
     [tail]: [
-      { [head]: "span", propsOrAttributes: { style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) + " triple " + state.triple } },
-      { [head]: "button", propsOrAttributes: { type: "button", textContent: buttonLabel, onClick } },
+      { [head]: "span", style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) + " triple " + state.triple },
+      { [head]: "button", type: "button", textContent: buttonLabel, onClick },
     ],
   };
 }
