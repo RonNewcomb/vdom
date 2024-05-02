@@ -14,6 +14,7 @@ const ifNotNode: Node = document.createComment("!iff");
 const nullNode: Node = document.createComment("null");
 
 function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement: Node): Node {
+  if (primitives.includes(typeof vtree)) return parentElement.appendChild(document.createTextNode(vtree as any));
   if (!vtree || !vtree.tag) return parentElement.appendChild(nullNode);
   const elName = vtree.attributes?.name as string;
   if (vtree.attributes && !vtree.attributes.iff && Object.hasOwn(vtree.attributes, "iff")) return parentElement.appendChild(ifNotNode);
@@ -140,7 +141,8 @@ function afterRendering() {
               const retval = (effect.callback as OnDiffHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state);
               if (retval instanceof Promise) {
                 console.log("ASYNC");
-                // retval.finally(scheduleRerender);
+                //scheduleRerender();
+                retval.finally(scheduleRerender);
               }
               // retval instanceof Promise ? retval.finally(scheduleRerender) : scheduleRerender(); // TODO this might be right
               break;
@@ -160,8 +162,12 @@ type IProps = Record<any, any>;
 type IState = Record<any, any>;
 
 interface ComponentDefinition<P extends IProps = IProps, S extends IState = IState> {
-  (props: P, state: S, children?: any[]): ShallowVDomNode<P, S> | null | undefined; //| Promise<ShallowVDomNode<P, S> | null | undefined>;
+  (props: P, state: S, children?: any[]): ShallowVDomNode<P, S> | null | undefined | Promise<ShallowVDomNode<P, S> | null | undefined>;
   testid?: string;
+}
+
+declare interface Promise<T> {
+  handled?: boolean;
 }
 
 interface ShallowVDomNode<P extends IProps = IProps, S extends IState = IState> {
@@ -169,6 +175,8 @@ interface ShallowVDomNode<P extends IProps = IProps, S extends IState = IState> 
   tail?: ShallowVDomNode[];
   propsOrAttributes?: P;
 }
+
+const primitives = ["bigint", "string", "symbol", "boolean", "number", "undefined", "null", "array"];
 
 let currentVDomNode: VDomNode;
 
@@ -181,16 +189,22 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
   oldReturnValue.nthEffect = -1;
   currentVDomNode = oldReturnValue;
   const compFn = typeof sel.head == "function" ? sel.head : () => sel;
-  const shallowdom: ShallowVDomNode | Promise<any> = compFn(sel.propsOrAttributes || {}, oldReturnValue.state, sel.tail) ?? { head: "" };
+  let shallowdom = compFn(sel.propsOrAttributes || {}, oldReturnValue.state, sel.tail) ?? { head: "" };
+  // console.log({ shallowdom });
   if (shallowdom instanceof Promise) {
-    if (!shallowdom.status) {
-      shallowdom.status = 1;
-      shallowdom.finally(() => {
-        shallowdom.status = 2;
+    if (oldReturnValue.state.render) shallowdom = oldReturnValue.state.render as ShallowVDomNode;
+    else if (!shallowdom.handled) {
+      // console.log("!handled");
+      shallowdom.handled = true;
+      shallowdom.then(render => {
+        // console.log("setting state.render");
+        oldReturnValue.state.render = render;
         scheduleRerender();
+        return render;
       });
-    }
-    return oldReturnValue;
+      return oldReturnValue;
+    } else return oldReturnValue;
+    // console.log("continuing with ", { shallowdom });
   }
   oldReturnValue.attributes = shallowdom.propsOrAttributes;
 
@@ -205,7 +219,9 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
   }
 
   // recurse
-  oldReturnValue.children = (shallowdom.tail || []).map((child, i) => componentToVDom(child, oldReturnValue!.children?.[i]));
+  oldReturnValue.children = (shallowdom.tail || []).map((child, i) =>
+    primitives.includes(typeof child) ? (child as any) : componentToVDom(child, oldReturnValue!.children?.[i])
+  );
 
   if (typeof shallowdom.head === "string") {
     oldReturnValue.tag = shallowdom.head;
@@ -348,21 +364,23 @@ function MainContent({ buttonLabel }: { buttonLabel: string }, state: Record<str
 }
 
 async function Eventually(): Promise<ShallowVDomNode> {
+  console.log("Eventually");
   await wait(3000);
+  console.log("Timeup");
   return <h2>Here!</h2>;
 }
 
 function OldEventually(props: IProps, state: IState): ShallowVDomNode {
   onDiff().then(async () => {
     console.log("FETCHING...");
-    state.retval = <div>fetching...</div>;
+    state.render = <div>fetching...</div>;
     await wait(3000);
     console.log("FETCHED");
-    state.retval = <h2>Here!</h2>;
+    state.render = <h2>Here!</h2>;
   });
 
-  console.log("state.retval=", state.retval);
-  return state.retval;
+  console.log("state.render=", state.render);
+  return state.render;
 }
 
 function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): ShallowVDomNode {
@@ -379,3 +397,4 @@ function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }):
 ////
 
 start(<Layout buttonLabel="Push me" style="background-color: blue" />);
+//start(<Eventually />);
