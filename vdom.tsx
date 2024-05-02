@@ -44,11 +44,11 @@ function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement:
           break;
         case "tag":
         case "tagName":
-        case "head":
+          //case head:
           break;
         case "children":
         case "childNodes":
-        case "tail":
+          //case [tail]:
           break;
         case "style":
           const s =
@@ -170,9 +170,12 @@ declare interface Promise<T> {
   handled?: boolean;
 }
 
+const head = Symbol("head");
+const tail = Symbol("tail");
+
 interface ShallowVDomNode<P extends IProps = IProps, S extends IState = IState> {
-  head: HTMLElement["tagName"] | ComponentDefinition<P, S> | undefined | null | "";
-  tail?: ShallowVDomNode[];
+  [head]: HTMLElement["tagName"] | ComponentDefinition<P, S> | undefined | null | "";
+  [tail]?: ShallowVDomNode[];
   propsOrAttributes?: P;
 }
 
@@ -188,8 +191,8 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
   oldReturnValue ||= newEmptyVDom();
   oldReturnValue.nthEffect = -1;
   currentVDomNode = oldReturnValue;
-  const compFn = typeof sel.head == "function" ? sel.head : () => sel;
-  let shallowdom = compFn(sel.propsOrAttributes || {}, oldReturnValue.state, sel.tail) ?? { head: "" };
+  const compFn = typeof sel[head] == "function" ? sel[head] : () => sel;
+  let shallowdom = compFn(sel.propsOrAttributes || {}, oldReturnValue.state, sel[tail]) ?? { [head]: "" };
   // console.log({ shallowdom });
   if (shallowdom instanceof Promise) {
     if (oldReturnValue.state.render) shallowdom = oldReturnValue.state.render as ShallowVDomNode;
@@ -209,22 +212,22 @@ function componentToVDom(sel: ShallowVDomNode, oldReturnValue?: VDomNode): VDomN
   oldReturnValue.attributes = shallowdom.propsOrAttributes;
 
   // data-testid
-  if (typeof sel.head == "function") {
-    if (!sel.head.testid) {
-      const fnDef: string = sel.head.toString();
-      sel.head.testid = fnDef.startsWith("function ") ? fnDef.slice(9, fnDef.indexOf("(")) : "component" + fnDef.slice(0, fnDef.indexOf(")") + 1);
+  if (typeof sel[head] == "function") {
+    if (!sel[head].testid) {
+      const fnDef: string = sel[head].toString();
+      sel[head].testid = fnDef.startsWith("function ") ? fnDef.slice(9, fnDef.indexOf("(")) : "component" + fnDef.slice(0, fnDef.indexOf(")") + 1);
     }
     if (!oldReturnValue.attributes) oldReturnValue.attributes = {};
-    oldReturnValue.attributes["data-testid"] = sel.head.testid;
+    oldReturnValue.attributes["data-testid"] = sel[head].testid;
   }
 
   // recurse
-  oldReturnValue.children = (shallowdom.tail || []).map((child, i) =>
+  oldReturnValue.children = (shallowdom[tail] || []).map((child, i) =>
     primitives.includes(typeof child) ? (child as any) : componentToVDom(child, oldReturnValue!.children?.[i])
   );
 
-  if (typeof shallowdom.head === "string") {
-    oldReturnValue.tag = shallowdom.head;
+  if (typeof shallowdom[head] === "string") {
+    oldReturnValue.tag = shallowdom[head];
     return oldReturnValue;
   }
   return componentToVDom(shallowdom, oldReturnValue);
@@ -261,8 +264,8 @@ declare namespace JSX {
   type IntrinsicElements = EachValuePartial<HTMLElementTagNameMap>;
 }
 
-function jsx(head: ShallowVDomNode["head"], propsOrAttributes?: IProps, ...tail: ShallowVDomNode[]): ShallowVDomNode {
-  const retval: ShallowVDomNode = { head, tail, propsOrAttributes };
+function jsx(tag: ShallowVDomNode[typeof head], propsOrAttributes?: IProps, ...rest: ShallowVDomNode[]): ShallowVDomNode {
+  const retval: ShallowVDomNode = { [head]: tag, [tail]: rest, propsOrAttributes };
   // console.log(JSON.stringify(retval));
   return retval;
 }
@@ -285,7 +288,7 @@ function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
 function For(props: { each: any[] }, state: IState, children: ShallowVDomNode[]): ShallowVDomNode | undefined {
   //console.log("<For />", props, state, children);
   const stampedOut = props.each.flatMap(value => children.map(child => cloneAndStamp(child, value)));
-  return { head: "div", tail: stampedOut, propsOrAttributes: { class: "lkj" } };
+  return { [head]: "div", [tail]: stampedOut, propsOrAttributes: { class: "lkj" } };
 }
 
 function Writer(): ShallowVDomNode {
@@ -310,21 +313,21 @@ function Writer(): ShallowVDomNode {
 
   // TODO onKeyDown handler breaks it all. prop not attribute...
   return <input name="rememberme" value={message} />;
-  //  return { head: "input", value: message, name: "rememberme" };
+  //  return { [head]: "input", value: message, name: "rememberme" };
 }
 
 function MainMenu(): ShallowVDomNode {
   return {
-    head: "menu",
-    tail: [
-      { head: "div", propsOrAttributes: { textContent: "item 1 if:false", if: false } },
-      { head: "div", propsOrAttributes: { textContent: "item 2 if:true", if: true } },
-      { head: "div", tail: [{ head: Writer }] },
-      { head: "div", propsOrAttributes: { textContent: "item 4 if:50%", if: Math.random() < 0.5 } },
-      { head: "div", propsOrAttributes: { textContent: "item 5 iff:50%", iff: Math.random() < 0.5 } },
-      { head: "div", propsOrAttributes: { textContent: "item 6 iff:false", iff: false } },
-      { head: "div", propsOrAttributes: { textContent: "item 7 iff:true", iff: true } },
-      { head: For, propsOrAttributes: { each: [0, 1] }, tail: [{ head: "div", propsOrAttributes: { "data-testid": "looped", class: "looper" } }] },
+    [head]: "menu",
+    [tail]: [
+      { [head]: "div", propsOrAttributes: { textContent: "item 1 if:false", if: false } },
+      { [head]: "div", propsOrAttributes: { textContent: "item 2 if:true", if: true } },
+      { [head]: "div", [tail]: [{ [head]: Writer }] },
+      { [head]: "div", propsOrAttributes: { textContent: "item 4 if:50%", if: Math.random() < 0.5 } },
+      { [head]: "div", propsOrAttributes: { textContent: "item 5 iff:50%", iff: Math.random() < 0.5 } },
+      { [head]: "div", propsOrAttributes: { textContent: "item 6 iff:false", iff: false } },
+      { [head]: "div", propsOrAttributes: { textContent: "item 7 iff:true", iff: true } },
+      { [head]: For, propsOrAttributes: { each: [0, 1] }, [tail]: [{ [head]: "div", propsOrAttributes: { "data-testid": "looped", class: "looper" } }] },
     ],
   };
 }
@@ -351,14 +354,14 @@ function MainContent({ buttonLabel }: { buttonLabel: string }, state: Record<str
   // );
 
   return {
-    head: "main",
+    [head]: "main",
     propsOrAttributes: {
       class: "mx-b",
       id: "contentroot",
     },
-    tail: [
-      { head: "span", propsOrAttributes: { style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) + " triple " + state.triple } },
-      { head: "button", propsOrAttributes: { type: "button", textContent: buttonLabel, onClick } },
+    [tail]: [
+      { [head]: "span", propsOrAttributes: { style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) + " triple " + state.triple } },
+      { [head]: "button", propsOrAttributes: { type: "button", textContent: buttonLabel, onClick } },
     ],
   };
 }
@@ -384,7 +387,7 @@ function OldEventually(props: IProps, state: IState): ShallowVDomNode {
 }
 
 function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): ShallowVDomNode {
-  //return { head: "div", tail: [{ head: MainMenu }, { head: MainContent, props: { buttonLabel } }] };
+  //return { [head]: "div", [tail]: [{ [head]: MainMenu }, { [head]: MainContent, props: { buttonLabel } }] };
   return (
     <div style={style}>
       <OldEventually />
