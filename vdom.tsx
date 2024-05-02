@@ -39,16 +39,16 @@ function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement:
           if (!attributeValue) el.setAttribute("style", "display:none!important");
           break;
         case "iff":
-        case "props":
+          // case "props":
           break;
-        case "tag":
-        case "tagName":
-          //case head:
-          break;
-        case "children":
-        case "childNodes":
-          //case [tail]:
-          break;
+        // case "tag":
+        // case "tagName":
+        //case head:
+        //   break;
+        // case "children":
+        // case "childNodes":
+        //   //case [tail]:
+        //   break;
         case "style":
           const s =
             typeof attributeValue === "object"
@@ -296,7 +296,7 @@ function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
 function For(props: { each: any[] }, state: IState, children: ShallowVDomNode[]): ShallowVDomNode | undefined {
   //console.log("<For />", props, state, children);
   const stampedOut = props.each.flatMap(value => children.map(child => cloneAndStamp(child, value)));
-  return { [head]: "div", [tail]: stampedOut, class: "lkj" };
+  return { [head]: "for-each", [tail]: stampedOut, class: "lkj" };
 }
 
 function Writer(): ShallowVDomNode {
@@ -335,7 +335,7 @@ function MainMenu(): ShallowVDomNode {
       { [head]: "div", textContent: "item 5 iff:50%", iff: Math.random() < 0.5 },
       { [head]: "div", textContent: "item 6 iff:false", iff: false },
       { [head]: "div", textContent: "item 7 iff:true", iff: true },
-      { [head]: For, each: [0, 1], [tail]: [{ [head]: "div", "data-testid": "looped", class: "looper" }] },
+      { [head]: For, each: [0, 1], [tail]: [{ [head]: "div", "data-testid": "looped", class: "looper", textContent: "Item X" }] },
     ],
   };
 }
@@ -382,18 +382,17 @@ async function Eventually(): Promise<ShallowVDomNode> {
 function OldEventually(props: IProps, state: IState): ShallowVDomNode {
   onDiff().then(async () => {
     console.log("FETCHING...");
-    state.render = <div>fetching...</div>;
+    state.result = <div>fetching...</div>;
     await wait(3000);
     console.log("FETCHED");
-    state.render = <h2>Here!</h2>;
+    state.result = <h2>Here!</h2>;
   });
 
-  console.log("state.render=", state.render);
-  return state.render;
+  console.log("state.result=", state.result);
+  return state.result;
 }
 
 function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): ShallowVDomNode {
-  //return { [head]: "div", [tail]: [{ [head]: MainMenu }, { [head]: MainContent, props: { buttonLabel } }] };
   return (
     <div style={style}>
       <OldEventually />
