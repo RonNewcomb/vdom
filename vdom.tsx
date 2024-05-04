@@ -3,17 +3,20 @@
 interface VDomNode {
   tag: HTMLElement["tagName"];
   attributes?: Record<string, any>;
-  children?: (VDomNode | undefined)[];
+  children?: VDomNodeOrPrimitive[];
   state: IState & { names?: Record<string, HTMLElement> };
   effects?: EffectHolder<any[], any[]>[];
   nthEffect: number;
 }
 
-const ifNotNode: Node = document.createComment("!iff");
-const nullNode: Node = document.createComment("null");
+type VDomNodeOrPrimitive = VDomNode | Primitives;
 
-function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement: Node): Node {
-  if (primitiveTypes.includes(typeof vtree)) return parentElement.appendChild(document.createTextNode(vtree as any));
+const ifNotNode: Readonly<Node> = document.createComment("!iff");
+const nullNode: Readonly<Node> = document.createComment("null");
+
+function vdomToRealDomRecurse(vtree: VDomNodeOrPrimitive, parentElement: Node): Node {
+  // if (Array.isArray( vtree  )) return parentElement.appendChild(document.createTextNode(vtree as any));
+  if (typeof vtree !== "object") return parentElement.appendChild(document.createTextNode(vtree as any));
   if (!vtree || !vtree.tag) return parentElement.appendChild(nullNode);
   const elName = vtree.attributes?.name as string;
   if (vtree.attributes && !vtree.attributes.iff && Object.hasOwn(vtree.attributes, "iff")) return parentElement.appendChild(ifNotNode);
@@ -40,6 +43,8 @@ function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement:
           break;
         case "iff":
           break;
+        case "names":
+          break;
         case "style":
           const s =
             typeof attributeValue === "object"
@@ -62,7 +67,7 @@ function vdomToRealDomRecurse(vtree: VDomNode | null | undefined, parentElement:
   return el;
 }
 
-function vdomToRealDom(vtree: VDomNode): void {
+function vdomToRealDom(vtree: VDomNodeOrPrimitive): void {
   appRootElement.replaceChildren(vdomToRealDomRecurse(vtree, document.createElement("div")));
   afterRendering();
 }
@@ -78,8 +83,6 @@ interface EffectHolder<T, R = any> {
   callback: OnEffectHandler<T, R>;
   then: (what: OnEffectHandler<T, R>) => any;
 }
-
-const effectsToRun = new Set<VDomNode>();
 
 function newEmptyEffect(effectType: EffectHolder<any, any>["effectType"]): EffectHolder<any[], any> {
   const effect = { effectType, oldArgs: [NaN], callback: doNothing } as any;
@@ -134,12 +137,13 @@ const head = Symbol("head");
 const tail = Symbol("tail");
 const rendered = Symbol("rendered");
 
-type IState = Record<string | number | symbol, any> & { names?: Record<string, HTMLElement>; [tail]?: ShallowVDomNode[] };
+type IState = Record<string | number | symbol, any> & { names?: Record<string, HTMLElement>; [tail]?: TemplateNoState[] };
 
 type Primitives = boolean | undefined | null | string | number | bigint;
+const primitiveTypes: Readonly<Primitives[]> = ["bigint", "string", "symbol", "boolean", "number", "undefined", "array"];
 
 interface ComponentDefinition<S extends IState = IState> {
-  (propsAndStateAndChildren: S | { [tail]: any[] }): ShallowVDomNode<S> | Primitives | Promise<ShallowVDomNode<S> | Primitives>;
+  (propsAndStateAndChildren: S): TemplateNoState<S> | Primitives | Promise<TemplateNoState<S> | Primitives>;
   testid?: string;
 }
 
@@ -147,49 +151,40 @@ declare interface Promise<T> {
   handled?: boolean;
 }
 
-interface ShallowVDomNode<S extends IState = IState> {
+interface TemplateNoState<S extends IState = IState> {
   [head]: HTMLElement["tagName"] | ComponentDefinition<S> | undefined | null | "";
-  [tail]?: ShallowVDomNode[];
+  [tail]?: TemplateNoState[];
   [key: string | number | symbol]: any;
 }
 
-const primitiveTypes = ["bigint", "string", "symbol", "boolean", "number", "undefined", "null", "array"];
-
-let currentVDomNode: VDomNode;
-
-function newEmptyVDom(aFunctionAndItsInputs: ShallowVDomNode): VDomNode {
-  return { tag: "", attributes: {}, state: aFunctionAndItsInputs, nthEffect: -1 };
-}
-
-function componentToVDom(aFunctionAndItsInputs: ShallowVDomNode, vnode?: VDomNode): VDomNode | undefined {
-  vnode ||= newEmptyVDom(aFunctionAndItsInputs);
+function componentToVDom(aFunctionAndItsInputs: TemplateNoState, vnode?: VDomNodeOrPrimitive): VDomNodeOrPrimitive {
+  if (typeof aFunctionAndItsInputs !== "object") return aFunctionAndItsInputs;
+  if (typeof vnode !== "object" && vnode != undefined) return vnode;
+  vnode ||= { tag: "", attributes: {}, state: aFunctionAndItsInputs, nthEffect: -1 };
   vnode.nthEffect = -1;
   currentVDomNode = vnode;
-  let outputFromAFunction = typeof aFunctionAndItsInputs[head] == "function" ? aFunctionAndItsInputs[head](aFunctionAndItsInputs) : aFunctionAndItsInputs;
+  let outputFromAFunction =
+    typeof aFunctionAndItsInputs[head] == "function" ? aFunctionAndItsInputs[head].call(vnode.state, aFunctionAndItsInputs) : aFunctionAndItsInputs;
   // console.log({ shallowdom });
+
+  if (typeof outputFromAFunction !== "object") return outputFromAFunction;
+  if (!outputFromAFunction) return outputFromAFunction;
+  //if (Array.isArray(outputFromAFunction)) return outputFromAFunction;
+  const vnodeInClosure = vnode; // don't put parameter in closure
   if (outputFromAFunction instanceof Promise) {
-    if (vnode.state[rendered]) outputFromAFunction = vnode.state[rendered] as ShallowVDomNode;
-    else if (!outputFromAFunction.handled) {
-      // console.log("!handled");
-      outputFromAFunction.handled = true;
-      outputFromAFunction.then(render => {
-        // console.log("setting state[rendered]");
-        vnode!.state[rendered] = render;
-        scheduleRerender();
-        return render;
-      });
+    if (!vnode.state[rendered]) {
+      if (!outputFromAFunction.handled) {
+        outputFromAFunction.then(render => {
+          vnodeInClosure.state[rendered] = render;
+          scheduleRerender();
+          return render;
+        });
+        outputFromAFunction.handled = true;
+      }
       return vnode;
-    } else return vnode;
-    // console.log("continuing with ", { shallowdom });
+    }
+    outputFromAFunction = vnode.state[rendered] as TemplateNoState;
   }
-  if (typeof outputFromAFunction === "string") return outputFromAFunction as any;
-  if (typeof outputFromAFunction === "boolean") return outputFromAFunction as any;
-  if (typeof outputFromAFunction === "number") return outputFromAFunction as any;
-  if (typeof outputFromAFunction === "bigint") return outputFromAFunction as any;
-  if (typeof outputFromAFunction === "symbol") return outputFromAFunction as any;
-  if (typeof outputFromAFunction === "undefined") return outputFromAFunction as any;
-  if (outputFromAFunction == null) return outputFromAFunction as any;
-  if (Array.isArray(outputFromAFunction)) return outputFromAFunction as any;
 
   //// from here, we have the return value of a component which is exactly one node-template with 0+ children  /////
   // interface VDomNode {
@@ -210,27 +205,27 @@ function componentToVDom(aFunctionAndItsInputs: ShallowVDomNode, vnode?: VDomNod
 
   // one auto-generated attribute if that one node-template IS a component
   if (typeof aFunctionAndItsInputs[head] == "function") {
-    if (!aFunctionAndItsInputs[head].testid) {
+    if (typeof aFunctionAndItsInputs[head].testid != "string") {
       const fnDef: string = aFunctionAndItsInputs[head].toString();
-      aFunctionAndItsInputs[head].testid = fnDef.startsWith("function ") ? fnDef.slice(9, fnDef.indexOf("(")) : "anonymous component";
+      aFunctionAndItsInputs[head].testid = fnDef.startsWith("function ") ? fnDef.slice(9, fnDef.indexOf("(")) : "";
     }
-    vnode.attributes["data-testid"] = aFunctionAndItsInputs[head].testid;
+    if (aFunctionAndItsInputs[head].testid) vnode.attributes["data-testid"] = aFunctionAndItsInputs[head].testid;
   }
 
   // recurse through children if any
-  vnode.children = (outputFromAFunction[tail] || []).map((child, i) =>
-    primitiveTypes.includes(typeof child) ? (child as any) : componentToVDom(child, vnode!.children?.[i])
-  );
+  vnode.children = (outputFromAFunction[tail] || []).map((child, i) => componentToVDom(child, vnodeInClosure.children?.[i]));
 
   return typeof outputFromAFunction[head] === "string" ? vnode : componentToVDom(outputFromAFunction, vnode);
 }
 
-let freshVDom: VDomNode | undefined = undefined;
-let topAppComponent: ShallowVDomNode | undefined = undefined;
+const effectsToRun = new Set<VDomNode>();
+let currentVDomNode: VDomNode;
+let freshVDom: VDomNodeOrPrimitive = undefined;
+let topAppComponent: TemplateNoState | undefined = undefined;
 let appRootElement: HTMLElement = document.body;
 let scheduledRerenders = 0;
 
-function start(app: ShallowVDomNode, rootElement?: HTMLElement | null) {
+function start(app: TemplateNoState, rootElement?: HTMLElement | null) {
   topAppComponent = app;
   if (rootElement) appRootElement = rootElement;
   else {
@@ -262,8 +257,8 @@ declare namespace JSX {
   type IntrinsicElements = EachValuePartial<HTMLElementTagNameMap>;
 }
 
-function jsx(tag: ShallowVDomNode[typeof head], propsOrAttributes: IState, ...rest: ShallowVDomNode[]): ShallowVDomNode {
-  const retval: ShallowVDomNode = { [head]: tag, [tail]: rest, ...propsOrAttributes };
+function jsx(tag: TemplateNoState[typeof head], propsOrAttributes: IState, ...rest: TemplateNoState[]): TemplateNoState {
+  const retval: TemplateNoState = { [head]: tag, [tail]: rest, ...propsOrAttributes };
   // console.log(JSON.stringify(retval));
   return retval;
 }
@@ -274,7 +269,7 @@ const doNothing = () => void 0;
 
 const wait = (milliseconds = 0) => new Promise(r => setTimeout(r, milliseconds));
 
-function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
+function cloneAndStamp(svNode: TemplateNoState, value: any): TemplateNoState {
   const retval = { ...svNode };
   retval.if = true;
   retval.name = value;
@@ -283,24 +278,25 @@ function cloneAndStamp(svNode: ShallowVDomNode, value: any): ShallowVDomNode {
 
 // sample components ////////////
 
-function For(state: IState & { each?: any[] }): ShallowVDomNode | undefined {
+// prefer global css  flex-row{display:flex}
+const FlexRow = ({ [tail]: children }: IState) => ({ [head]: "flex-row", style: "display:flex", [tail]: children });
+
+function For(state: IState & { each?: any[] }): TemplateNoState | undefined {
   //console.log("<For />", props, state, children);
   const children = state[tail] || [];
   const values = state.each || [];
   if (!children.length || !values.length) return undefined;
-  const stampedOut = values.flatMap(value => children.map(child => cloneAndStamp(child, value)));
-  return { [head]: "for-each", [tail]: stampedOut, class: "lkj" };
+  return { [head]: "for-each", [tail]: values.flatMap(value => children.map(child => cloneAndStamp(child, value))) };
 }
+For.testid = "";
 
-function Writer(): ShallowVDomNode {
+function Writer(): TemplateNoState {
   //console.log("Writer invoked");
   const message = "hello world ";
 
   onReady().then((args, state, rerenderFn) => {
-    const elements = state.names;
-    console.log("REF ELEMENTS", { elements, args, state });
-    elements?.rememberme.focus();
-    //state.elements = elements;
+    console.log("REF ELEMENTS", { args, state });
+    state.names?.rememberme.focus();
   });
 
   // onDiff(state.local).then(args => {
@@ -318,7 +314,7 @@ function Writer(): ShallowVDomNode {
   //  return { [head]: "input", value: message, name: "rememberme" };
 }
 
-function MainMenu(): ShallowVDomNode {
+function MainMenu(): TemplateNoState {
   return {
     [head]: "menu",
     [tail]: [
@@ -334,14 +330,15 @@ function MainMenu(): ShallowVDomNode {
   };
 }
 
-function MainContent(state: IState & { buttonLabel: string }): ShallowVDomNode {
+function MainContent(this: { counter?: number; triple?: number }, { buttonLabel }: { buttonLabel: string }): TemplateNoState {
+  console.log("maincontent this, state", { buttonLabel, this: this });
   const onClick = () => {
-    state.counter = (state.counter || 0) + 1;
-    alert("counter at " + state.counter);
-    if (!(state.counter % 3)) state.triple = state.triple ? state.triple + 1 : 1;
+    this.counter = (this.counter || 0) + 1;
+    alert("counter at " + this.counter);
+    if (!(this.counter % 3)) this.triple = this.triple ? this.triple + 1 : 1;
   };
 
-  onDiff(state.triple).then(async ([triple], state) => {
+  onDiff(this.triple).then(async ([triple], state) => {
     await Promise.resolve(0);
     console.log("USEEFFECT 3rd", triple, "counter=", state.counter);
   });
@@ -360,20 +357,20 @@ function MainContent(state: IState & { buttonLabel: string }): ShallowVDomNode {
     class: "mx-b",
     id: "contentroot",
     [tail]: [
-      { [head]: "span", style: "font-weight:bold", textContent: "in a span " + (state.counter || 0) + " triple " + state.triple },
-      { [head]: "button", type: "button", textContent: state.buttonLabel, onClick },
+      { [head]: "span", style: "font-weight:bold", textContent: "in a span " + (this.counter || 0) + " triple " + this.triple },
+      { [head]: "button", type: "button", textContent: buttonLabel, onClick },
     ],
   };
 }
 
-async function Eventually(): Promise<ShallowVDomNode> {
+async function Eventually(): Promise<TemplateNoState> {
   console.log("Eventually");
   await wait(3000);
   console.log("Timeup");
   return <h2>Here!</h2>;
 }
 
-function OldEventually(mostlyItsInputs: IState): ShallowVDomNode {
+function OldEventually(mostlyItsInputs: IState): TemplateNoState {
   onDiff().then(async () => {
     console.log("FETCHING...");
     mostlyItsInputs.result = <div>fetching...</div>;
@@ -386,10 +383,22 @@ function OldEventually(mostlyItsInputs: IState): ShallowVDomNode {
   return mostlyItsInputs.result;
 }
 
-function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): ShallowVDomNode {
+function TopMenu() {
+  return {
+    [head]: FlexRow,
+    [tail]: [
+      { [head]: "div", [tail]: ["One"] },
+      { [head]: "div", [tail]: ["Two"] },
+      { [head]: "div", [tail]: ["Three"] },
+    ],
+  };
+}
+
+function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): TemplateNoState {
   return (
     <div style={style}>
       {/*<OldEventually />*/}
+      <TopMenu />
       <MainMenu />
       <MainContent buttonLabel={buttonLabel} />
     </div>
