@@ -15,8 +15,7 @@ const ifNotNode: Readonly<Node> = document.createComment("!iff");
 const nullNode: Readonly<Node> = document.createComment("null");
 
 function vdomToRealDomRecurse(vtree: VDomNodeOrPrimitive, parentElement: Node): Node {
-  // if (Array.isArray( vtree  )) return parentElement.appendChild(document.createTextNode(vtree as any));
-  if (typeof vtree !== "object") return parentElement.appendChild(document.createTextNode(vtree as any));
+  if (Array.isArray(vtree) || typeof vtree !== "object") return parentElement.appendChild(document.createTextNode(vtree as any));
   if (!vtree || !vtree.tag) return parentElement.appendChild(nullNode);
   const elName = vtree.attributes?.name as string;
   if (vtree.attributes && !vtree.attributes.iff && Object.hasOwn(vtree.attributes, "iff")) return parentElement.appendChild(ifNotNode);
@@ -103,31 +102,16 @@ const onDiff = (...newArgs: any[]): EffectHolder<typeof newArgs> => onSomething(
 const onReady = (...newArgs: any[]): EffectHolder<typeof newArgs> => onSomething("elRef", ...newArgs);
 
 function afterRendering() {
-  for (const vdom of effectsToRun) {
+  for (const vdom of effectsToRun)
     if (vdom.effects)
       for (const effect of vdom.effects) {
         const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
-        const old = effect.oldArgs;
+        if (!somethingChanged) continue;
         effect.oldArgs = effect.newArgs;
-        if (somethingChanged) {
-          console.log("diff", vdom.tag, old, effect.newArgs);
-          switch (effect.effectType) {
-            case "diff":
-              const retval = (effect.callback as OnEffectHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state, scheduleRerender);
-              if (retval instanceof Promise) {
-                console.log("ASYNC");
-                //scheduleRerender();
-                retval.finally(scheduleRerender);
-              }
-              // retval instanceof Promise ? retval.finally(scheduleRerender) : scheduleRerender(); // TODO this might be right
-              break;
-            case "elRef":
-              (effect.callback as OnEffectHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state, scheduleRerender);
-              break;
-          }
-        }
+        const retval = (effect.callback as OnEffectHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state, scheduleRerender);
+        if (retval instanceof Promise) retval.finally(scheduleRerender);
+        //  scheduleRerender(); // TODO this might be right
       }
-  }
   effectsToRun.clear();
 }
 
@@ -140,7 +124,7 @@ const rendered = Symbol("rendered");
 type IState = Record<string | number | symbol, any> & { names?: Record<string, HTMLElement>; [tail]?: TemplateNoState[] };
 
 type Primitives = boolean | undefined | null | string | number | bigint;
-const primitiveTypes: Readonly<Primitives[]> = ["bigint", "string", "symbol", "boolean", "number", "undefined", "array"];
+//const primitiveTypes: Readonly<Primitives[]> = ["bigint", "string", "symbol", "boolean", "number", "undefined", "array"];
 
 interface ComponentDefinition<S extends IState = IState> {
   (propsAndStateAndChildren: S): TemplateNoState<S> | Primitives | Promise<TemplateNoState<S> | Primitives>;
@@ -169,8 +153,8 @@ function componentToVDom(aFunctionAndItsInputs: TemplateNoState, vnode?: VDomNod
     typeof aFunctionAndItsInputs[head] == "function" ? aFunctionAndItsInputs[head].call(vnode.state, aFunctionAndItsInputs) : aFunctionAndItsInputs;
   // console.log({ shallowdom });
 
-  if (typeof outputFromAFunction !== "object") return outputFromAFunction;
   if (!outputFromAFunction) return outputFromAFunction;
+  if (typeof outputFromAFunction !== "object") return outputFromAFunction;
   //if (Array.isArray(outputFromAFunction)) return outputFromAFunction;
   const vnodeInClosure = vnode; // don't put parameter in closure
   if (outputFromAFunction instanceof Promise) {
