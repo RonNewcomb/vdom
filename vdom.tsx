@@ -147,6 +147,8 @@ interface ComponentDefinition<S extends IState = IState> {
   testid?: string;
 }
 
+type CC = ComponentDefinition;
+
 declare interface Promise<T> {
   handled?: boolean;
 }
@@ -224,6 +226,7 @@ let freshVDom: VDomNodeOrPrimitive = undefined;
 let topAppComponent: TemplateNoState | undefined = undefined;
 let appRootElement: HTMLElement = document.body;
 let scheduledRerenders = 0;
+let globalState: Record<string | number | symbol, any> = { styles: {} };
 
 function start(app: TemplateNoState, rootElement?: HTMLElement | null) {
   topAppComponent = app;
@@ -269,26 +272,46 @@ const doNothing = () => void 0;
 
 const wait = (milliseconds = 0) => new Promise(r => setTimeout(r, milliseconds));
 
-function cloneAndStamp(svNode: TemplateNoState, value: any): TemplateNoState {
-  const retval = { ...svNode };
-  retval.if = true;
-  retval.name = value;
-  return retval;
+// css ///////////
+
+function css(name: string, props: string) {
+  if (globalState.styles[name]) return name;
+  const el = document.createElement("style");
+  el.id = name;
+  el.innerText = `.${name}{${props}}`;
+  document.head.appendChild(el);
+  globalState.styles[name] = el;
+  return name;
 }
+
+// function onCssRule(name: string, props: string): string {
+//   onDiff().then(() => css(name, props));
+//   return name;
+// }
 
 // sample components ////////////
 
-// prefer global css  flex-row{display:flex}
-const FlexRow = ({ [tail]: children }: IState) => ({ [head]: "flex-row", style: "display:flex", [tail]: children });
+const outsideCss = css("outsideCss", "display:block");
 
-function For(state: IState & { each?: any[] }): TemplateNoState | undefined {
-  //console.log("<For />", props, state, children);
-  const children = state[tail] || [];
-  const values = state.each || [];
-  if (!children.length || !values.length) return undefined;
-  return { [head]: "for-each", [tail]: values.flatMap(value => children.map(child => cloneAndStamp(child, value))) };
-}
-For.testid = "";
+const FlexRow: CC = ({ [tail]: children }: IState) => {
+  const flexRowCss = css("flexRow", "display:flex");
+  return { [head]: "flex-row", class: flexRowCss, [tail]: children };
+};
+
+const For: CC = ({ each, [tail]: children }: IState & { each?: any[] }) =>
+  children && each && children.length && each.length
+    ? {
+        [head]: "for-each",
+        [tail]: each.flatMap(value =>
+          children.map(child => {
+            const retval = { ...child };
+            retval.if = true;
+            retval.name = value;
+            return retval;
+          })
+        ),
+      }
+    : undefined;
 
 function Writer(): TemplateNoState {
   //console.log("Writer invoked");
@@ -394,6 +417,17 @@ function TopMenu() {
   };
 }
 
+function Footer() {
+  return {
+    [head]: FlexRow,
+    [tail]: [
+      { [head]: "div", innerText: "Four" },
+      { [head]: "div", [tail]: ["Five"] },
+      { [head]: "div", textContent: "Six" },
+    ],
+  };
+}
+
 function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }): TemplateNoState {
   return (
     <div style={style}>
@@ -401,6 +435,7 @@ function Layout({ buttonLabel, style }: { buttonLabel: string; style: string }):
       <TopMenu />
       <MainMenu />
       <MainContent buttonLabel={buttonLabel} />
+      <Footer />
     </div>
   );
 }
