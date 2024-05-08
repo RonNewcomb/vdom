@@ -99,13 +99,9 @@ function componentToVDomRecurse(aFunctionAndItsInputs: TemplateNoState, vnode?: 
   }
 
   //// from here, we have the return value of a component which is exactly one node-template with 0+ children  /////
-  // interface VDomNode {
-
-  // tagname if that one node-template ISN'T a component
-  if (typeof outputFromAFunction[head] === "string") vnode.tag = outputFromAFunction[head];
-
-  // all attributes of that one node-template
+  vnode.tag = typeof outputFromAFunction[head] === "string" ? outputFromAFunction[head] : (undefined as any);
   vnode.attributes = outputFromAFunction;
+  vnode.children = (outputFromAFunction[tail] || []).map((child, i) => componentToVDomRecurse(child, vnodeInClosure.children?.[i]));
 
   // one auto-generated attribute if that one node-template IS a component
   if (typeof aFunctionAndItsInputs[head] == "function") {
@@ -116,10 +112,7 @@ function componentToVDomRecurse(aFunctionAndItsInputs: TemplateNoState, vnode?: 
     if (aFunctionAndItsInputs[head].testid) vnode.attributes["data-testid"] = aFunctionAndItsInputs[head].testid;
   }
 
-  // recurse through children if any
-  vnode.children = (outputFromAFunction[tail] || []).map((child, i) => componentToVDomRecurse(child, vnodeInClosure.children?.[i]));
-
-  return typeof outputFromAFunction[head] === "string" ? vnode : componentToVDomRecurse(outputFromAFunction, vnode);
+  return typeof vnode.tag === "string" ? vnode : componentToVDomRecurse(outputFromAFunction, vnode);
 }
 
 // virtual dom ////////////
