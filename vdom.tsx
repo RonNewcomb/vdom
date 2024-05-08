@@ -1,11 +1,11 @@
 // start and render
 
-const effectsToRun = new Set<VDomNode>();
-let currentVDomNode: VDomNode;
-let freshVDom: VDomNodeOrPrimitive = undefined;
-let topAppComponent: TemplateNoState | undefined = undefined;
 let topAppElement: HTMLElement = document.body;
+let topAppComponent: TemplateNoState | undefined = undefined;
+let freshVDom: VDomNodeOrPrimitive = undefined;
+let currentVDomNode: VDomNode;
 let scheduledRerenders = 0;
+let effectsToRun = new Set<VDomNode>();
 let globalState: Record<string | number | symbol, any> = { styles: {} }; // css hack
 
 function start(appComponent: TemplateNoState, rootElement?: HTMLElement | null) {
@@ -21,17 +21,19 @@ function start(appComponent: TemplateNoState, rootElement?: HTMLElement | null) 
 function scheduleRerender(): void {
   scheduledRerenders++;
   Promise.resolve().then(() => {
-    if (--scheduledRerenders) return; // a later promise is already in the queue
+    scheduledRerenders--;
+    if (scheduledRerenders) return; // a later promise is already in the queue
     freshVDom = componentToVDomRecurse(topAppComponent!, freshVDom);
     if (scheduledRerenders) return; // if above line called scheduleRerender(), don't commit to real dom
-    topAppElement.replaceChildren(vdomToRealDomRecurse(freshVDom, document.createElement("div")));
+    const freshElements = vdomToElementsRecurse(freshVDom, document.createElement("div"));
+    topAppElement.replaceChildren(freshElements);
     for (const vdom of effectsToRun)
       if (vdom.effects)
         for (const effect of vdom.effects) {
           const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
           if (!somethingChanged) continue;
           effect.oldArgs = effect.newArgs;
-          const retval = (effect.callback as OnEffectHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state, scheduleRerender);
+          const retval = effect.callback(effect.newArgs, vdom.state, scheduleRerender);
           if (retval instanceof Promise) retval.finally(scheduleRerender);
           //  scheduleRerender(); // TODO this might be right
         }
@@ -136,7 +138,7 @@ type VDomNodeOrPrimitive = VDomNode | Primitives;
 const ifNotNode: Readonly<Node> = document.createComment("!iff");
 const nullNode: Readonly<Node> = document.createComment("null");
 
-function vdomToRealDomRecurse(vtree: VDomNodeOrPrimitive, parentElement: Node): Node {
+function vdomToElementsRecurse(vtree: VDomNodeOrPrimitive, parentElement: Node): Node {
   if (Array.isArray(vtree) || typeof vtree !== "object") return parentElement.appendChild(document.createTextNode(vtree as any));
   if (!vtree || !vtree.tag) return parentElement.appendChild(nullNode);
   const elName = vtree.attributes?.name as string;
@@ -184,7 +186,7 @@ function vdomToRealDomRecurse(vtree: VDomNodeOrPrimitive, parentElement: Node): 
       }
     }
   }
-  if (vtree.children?.length) for (const child of vtree.children) vdomToRealDomRecurse(child, el);
+  if (vtree.children?.length) for (const child of vtree.children) vdomToElementsRecurse(child, el);
   return el;
 }
 
