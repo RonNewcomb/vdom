@@ -1,3 +1,125 @@
+// start and render
+
+const effectsToRun = new Set<VDomNode>();
+let currentVDomNode: VDomNode;
+let freshVDom: VDomNodeOrPrimitive = undefined;
+let topAppComponent: TemplateNoState | undefined = undefined;
+let topAppElement: HTMLElement = document.body;
+let scheduledRerenders = 0;
+let globalState: Record<string | number | symbol, any> = { styles: {} }; // css hack
+
+function start(appComponent: TemplateNoState, rootElement?: HTMLElement | null) {
+  topAppComponent = appComponent;
+  topAppElement = rootElement!;
+  if (!topAppElement) {
+    topAppElement = document.createElement("div");
+    document.body.insertBefore(topAppElement, document.body.firstChild);
+  }
+  scheduleRerender();
+}
+
+function scheduleRerender(): void {
+  scheduledRerenders++;
+  Promise.resolve().then(() => {
+    if (--scheduledRerenders) return; // a later promise is already in the queue
+    freshVDom = componentToVDomRecurse(topAppComponent!, freshVDom);
+    if (scheduledRerenders) return; // if above line called scheduleRerender(), don't commit to real dom
+    topAppElement.replaceChildren(vdomToRealDomRecurse(freshVDom, document.createElement("div")));
+    for (const vdom of effectsToRun)
+      if (vdom.effects)
+        for (const effect of vdom.effects) {
+          const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
+          if (!somethingChanged) continue;
+          effect.oldArgs = effect.newArgs;
+          const retval = (effect.callback as OnEffectHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state, scheduleRerender);
+          if (retval instanceof Promise) retval.finally(scheduleRerender);
+          //  scheduleRerender(); // TODO this might be right
+        }
+    effectsToRun.clear();
+  });
+}
+
+// closure components ////////////
+
+const head = Symbol("head");
+const tail = Symbol("tail");
+const rendered = Symbol("rendered");
+
+type IState = Record<string | number | symbol, any> & { names?: Record<string, HTMLElement>; [tail]?: TemplateNoState[] };
+
+type Primitives = boolean | undefined | null | string | number | bigint;
+//const primitiveTypes: Readonly<Primitives[]> = ["bigint", "string", "symbol", "boolean", "number", "undefined", "array"];
+
+interface ComponentDefinition<S extends IState = IState> {
+  (propsAndStateAndChildren: S): TemplateNoState<S> | Primitives | Promise<TemplateNoState<S> | Primitives>;
+  testid?: string;
+}
+
+type CC = ComponentDefinition;
+
+declare interface Promise<T> {
+  handled?: boolean;
+}
+
+interface TemplateNoState<S extends IState = IState> {
+  [head]: HTMLElement["tagName"] | ComponentDefinition<S> | undefined | null | "";
+  [tail]?: TemplateNoState[];
+  [key: string | number | symbol]: any;
+}
+
+function componentToVDomRecurse(aFunctionAndItsInputs: TemplateNoState, vnode?: VDomNodeOrPrimitive): VDomNodeOrPrimitive {
+  if (typeof aFunctionAndItsInputs !== "object") return aFunctionAndItsInputs;
+  if (typeof vnode !== "object" && vnode != undefined) return vnode;
+  vnode ||= { tag: "", attributes: {}, state: aFunctionAndItsInputs, nthEffect: -1 };
+  vnode.nthEffect = -1;
+  currentVDomNode = vnode;
+  let outputFromAFunction =
+    typeof aFunctionAndItsInputs[head] == "function" ? aFunctionAndItsInputs[head].call(vnode.state, aFunctionAndItsInputs) : aFunctionAndItsInputs;
+  // console.log({ shallowdom });
+
+  if (!outputFromAFunction) return outputFromAFunction;
+  if (typeof outputFromAFunction !== "object") return outputFromAFunction;
+  //if (Array.isArray(outputFromAFunction)) return outputFromAFunction;
+  const vnodeInClosure = vnode; // don't put parameter in closure
+  if (outputFromAFunction instanceof Promise) {
+    if (!vnode.state[rendered]) {
+      if (!outputFromAFunction.handled) {
+        outputFromAFunction.then(render => {
+          vnodeInClosure.state[rendered] = render;
+          scheduleRerender();
+          return render;
+        });
+        outputFromAFunction.handled = true;
+      }
+      return vnode;
+    }
+    outputFromAFunction = vnode.state[rendered] as TemplateNoState;
+  }
+
+  //// from here, we have the return value of a component which is exactly one node-template with 0+ children  /////
+  // interface VDomNode {
+
+  // tagname if that one node-template ISN'T a component
+  if (typeof outputFromAFunction[head] === "string") vnode.tag = outputFromAFunction[head];
+
+  // all attributes of that one node-template
+  vnode.attributes = outputFromAFunction;
+
+  // one auto-generated attribute if that one node-template IS a component
+  if (typeof aFunctionAndItsInputs[head] == "function") {
+    if (typeof aFunctionAndItsInputs[head].testid != "string") {
+      const fnDef: string = aFunctionAndItsInputs[head].toString();
+      aFunctionAndItsInputs[head].testid = fnDef.startsWith("function ") ? fnDef.slice(9, fnDef.indexOf("(")) : "";
+    }
+    if (aFunctionAndItsInputs[head].testid) vnode.attributes["data-testid"] = aFunctionAndItsInputs[head].testid;
+  }
+
+  // recurse through children if any
+  vnode.children = (outputFromAFunction[tail] || []).map((child, i) => componentToVDomRecurse(child, vnodeInClosure.children?.[i]));
+
+  return typeof outputFromAFunction[head] === "string" ? vnode : componentToVDomRecurse(outputFromAFunction, vnode);
+}
+
 // virtual dom ////////////
 
 interface VDomNode {
@@ -66,173 +188,30 @@ function vdomToRealDomRecurse(vtree: VDomNodeOrPrimitive, parentElement: Node): 
   return el;
 }
 
-function vdomToRealDom(vtree: VDomNodeOrPrimitive): void {
-  appRootElement.replaceChildren(vdomToRealDomRecurse(vtree, document.createElement("div")));
-  afterRendering();
-}
-
 // useEffect ////////////
 
 type OnEffectHandler<T, R = any> = (args: T, state: IState, rerenderFn: () => void) => R;
 
 interface EffectHolder<T, R = any> {
-  effectType: "diff" | "elRef";
   oldArgs: T;
   newArgs: T;
   callback: OnEffectHandler<T, R>;
   then: (what: OnEffectHandler<T, R>) => any;
 }
 
-function newEmptyEffect(effectType: EffectHolder<any, any>["effectType"]): EffectHolder<any[], any> {
-  const effect = { effectType, oldArgs: [NaN], callback: doNothing } as any;
-  effect.then = (what: OnEffectHandler<any[]>) => (effect.callback = what);
-  return effect;
-}
-
-function onSomething(effectType: EffectHolder<any, any>["effectType"], ...newArgs: any[]): EffectHolder<typeof newArgs, any> {
+function onDiff(...newArgs: any[]): EffectHolder<typeof newArgs, any> {
   if (!currentVDomNode.effects) currentVDomNode.effects = [];
   const i = ++currentVDomNode.nthEffect;
-  if (!currentVDomNode.effects[i]) currentVDomNode.effects[i] = newEmptyEffect(effectType);
+  if (!currentVDomNode.effects[i]) {
+    const newEffect = { oldArgs: [NaN], callback: doNothing } as any;
+    newEffect.then = (what: OnEffectHandler<any[]>) => (newEffect.callback = what);
+    currentVDomNode.effects[i] = newEffect;
+  }
   currentVDomNode.effects[i].newArgs = newArgs;
   effectsToRun.add(currentVDomNode);
   return currentVDomNode.effects[i];
 }
-
-const onDiff = (...newArgs: any[]): EffectHolder<typeof newArgs> => onSomething("diff", ...newArgs);
-const onReady = (...newArgs: any[]): EffectHolder<typeof newArgs> => onSomething("elRef", ...newArgs);
-
-function afterRendering() {
-  for (const vdom of effectsToRun)
-    if (vdom.effects)
-      for (const effect of vdom.effects) {
-        const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
-        if (!somethingChanged) continue;
-        effect.oldArgs = effect.newArgs;
-        const retval = (effect.callback as OnEffectHandler<typeof effect.newArgs>)(effect.newArgs, vdom.state, scheduleRerender);
-        if (retval instanceof Promise) retval.finally(scheduleRerender);
-        //  scheduleRerender(); // TODO this might be right
-      }
-  effectsToRun.clear();
-}
-
-// closure components ////////////
-
-const head = Symbol("head");
-const tail = Symbol("tail");
-const rendered = Symbol("rendered");
-
-type IState = Record<string | number | symbol, any> & { names?: Record<string, HTMLElement>; [tail]?: TemplateNoState[] };
-
-type Primitives = boolean | undefined | null | string | number | bigint;
-//const primitiveTypes: Readonly<Primitives[]> = ["bigint", "string", "symbol", "boolean", "number", "undefined", "array"];
-
-interface ComponentDefinition<S extends IState = IState> {
-  (propsAndStateAndChildren: S): TemplateNoState<S> | Primitives | Promise<TemplateNoState<S> | Primitives>;
-  testid?: string;
-}
-
-type CC = ComponentDefinition;
-
-declare interface Promise<T> {
-  handled?: boolean;
-}
-
-interface TemplateNoState<S extends IState = IState> {
-  [head]: HTMLElement["tagName"] | ComponentDefinition<S> | undefined | null | "";
-  [tail]?: TemplateNoState[];
-  [key: string | number | symbol]: any;
-}
-
-function componentToVDom(aFunctionAndItsInputs: TemplateNoState, vnode?: VDomNodeOrPrimitive): VDomNodeOrPrimitive {
-  if (typeof aFunctionAndItsInputs !== "object") return aFunctionAndItsInputs;
-  if (typeof vnode !== "object" && vnode != undefined) return vnode;
-  vnode ||= { tag: "", attributes: {}, state: aFunctionAndItsInputs, nthEffect: -1 };
-  vnode.nthEffect = -1;
-  currentVDomNode = vnode;
-  let outputFromAFunction =
-    typeof aFunctionAndItsInputs[head] == "function" ? aFunctionAndItsInputs[head].call(vnode.state, aFunctionAndItsInputs) : aFunctionAndItsInputs;
-  // console.log({ shallowdom });
-
-  if (!outputFromAFunction) return outputFromAFunction;
-  if (typeof outputFromAFunction !== "object") return outputFromAFunction;
-  //if (Array.isArray(outputFromAFunction)) return outputFromAFunction;
-  const vnodeInClosure = vnode; // don't put parameter in closure
-  if (outputFromAFunction instanceof Promise) {
-    if (!vnode.state[rendered]) {
-      if (!outputFromAFunction.handled) {
-        outputFromAFunction.then(render => {
-          vnodeInClosure.state[rendered] = render;
-          scheduleRerender();
-          return render;
-        });
-        outputFromAFunction.handled = true;
-      }
-      return vnode;
-    }
-    outputFromAFunction = vnode.state[rendered] as TemplateNoState;
-  }
-
-  //// from here, we have the return value of a component which is exactly one node-template with 0+ children  /////
-  // interface VDomNode {
-  //   tag: HTMLElement["tagName"];
-  //   attributes?: Record<string, any>;
-  //   children?: (VDomNode | undefined)[];
-  //   state: IState;
-  //   effects?: DiffEffectHolder<any[], any[]>[] | RefEffectHolder<any[], any[]>[];
-  //   nthEffect: number;
-  //   state.names?: Record<string, HTMLElement>;
-  // }
-
-  // tagname if that one node-template ISN'T a component
-  if (typeof outputFromAFunction[head] === "string") vnode.tag = outputFromAFunction[head];
-
-  // all attributes of that one node-template
-  vnode.attributes = outputFromAFunction;
-
-  // one auto-generated attribute if that one node-template IS a component
-  if (typeof aFunctionAndItsInputs[head] == "function") {
-    if (typeof aFunctionAndItsInputs[head].testid != "string") {
-      const fnDef: string = aFunctionAndItsInputs[head].toString();
-      aFunctionAndItsInputs[head].testid = fnDef.startsWith("function ") ? fnDef.slice(9, fnDef.indexOf("(")) : "";
-    }
-    if (aFunctionAndItsInputs[head].testid) vnode.attributes["data-testid"] = aFunctionAndItsInputs[head].testid;
-  }
-
-  // recurse through children if any
-  vnode.children = (outputFromAFunction[tail] || []).map((child, i) => componentToVDom(child, vnodeInClosure.children?.[i]));
-
-  return typeof outputFromAFunction[head] === "string" ? vnode : componentToVDom(outputFromAFunction, vnode);
-}
-
-const effectsToRun = new Set<VDomNode>();
-let currentVDomNode: VDomNode;
-let freshVDom: VDomNodeOrPrimitive = undefined;
-let topAppComponent: TemplateNoState | undefined = undefined;
-let appRootElement: HTMLElement = document.body;
-let scheduledRerenders = 0;
-let globalState: Record<string | number | symbol, any> = { styles: {} };
-
-function start(app: TemplateNoState, rootElement?: HTMLElement | null) {
-  topAppComponent = app;
-  if (rootElement) appRootElement = rootElement;
-  else {
-    appRootElement = document.createElement("div");
-    document.body.insertBefore(appRootElement, document.body.firstChild);
-  }
-  rerender();
-}
-
-function scheduleRerender(): void {
-  scheduledRerenders++;
-  Promise.resolve().then(() => !--scheduledRerenders && rerender());
-}
-
-function rerender() {
-  if (scheduledRerenders) return; // a later promise is already in the queue
-  freshVDom = componentToVDom(topAppComponent!, freshVDom);
-  if (scheduledRerenders) return; // if above line called scheduleRerender(), don't commit to real dom
-  vdomToRealDom(freshVDom!);
-}
+const onReady = onDiff;
 
 // jsx stand-in ////////////
 
@@ -245,18 +224,15 @@ declare namespace JSX {
 }
 
 function jsx(tag: TemplateNoState[typeof head], propsOrAttributes: IState, ...rest: TemplateNoState[]): TemplateNoState {
-  const retval: TemplateNoState = { [head]: tag, [tail]: rest, ...propsOrAttributes };
-  // console.log(JSON.stringify(retval));
-  return retval;
+  propsOrAttributes ||= {};
+  propsOrAttributes[head] = tag;
+  propsOrAttributes[tail] = rest;
+  return propsOrAttributes as TemplateNoState;
 }
 
 // utility ////////////
 
 const doNothing = () => void 0;
-
-const wait = (milliseconds = 0) => new Promise(r => setTimeout(r, milliseconds));
-
-// css ///////////
 
 function css(name: string, props: string) {
   if (globalState.styles[name]) return name;
@@ -273,7 +249,7 @@ function css(name: string, props: string) {
 //   return name;
 // }
 
-// sample components ////////////
+// sample components //////////////////////////////////////////////////////////////////////////
 
 const outsideCss = css("outsideCss", "display:block");
 
@@ -369,6 +345,8 @@ function MainContent(this: { counter?: number; triple?: number }, { buttonLabel 
     ],
   };
 }
+
+const wait = (milliseconds = 0) => new Promise(r => setTimeout(r, milliseconds));
 
 async function Eventually(): Promise<TemplateNoState> {
   console.log("Eventually");
