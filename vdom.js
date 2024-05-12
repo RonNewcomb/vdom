@@ -26,18 +26,19 @@ function scheduleRerender() {
             return;
         const freshElements = vdomToElementsRecurse(freshVDom, document.createElement("div"));
         topAppElement.replaceChildren(freshElements);
-        for (const vdom of effectsToRun)
-            if (vdom.effects)
-                for (const effect of vdom.effects) {
-                    const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
-                    if (!somethingChanged)
-                        continue;
-                    effect.oldArgs = effect.newArgs;
-                    const retval = effect.callback(effect.newArgs, vdom.state, scheduleRerender);
-                    if (retval instanceof Promise)
-                        retval.finally(scheduleRerender);
-                }
+        let somethingChanged = false;
+        for (const effect of effectsToRun) {
+            if (effect.oldArgs.length === effect.newArgs.length && effect.oldArgs.every((arg, i) => Object.is(arg, effect.newArgs[i])))
+                continue;
+            somethingChanged = true;
+            effect.oldArgs = effect.newArgs;
+            const retval = effect.callback(effect.newArgs, effect.state, scheduleRerender);
+            if (retval instanceof Promise)
+                retval.finally(scheduleRerender);
+        }
         effectsToRun.clear();
+        if (somethingChanged)
+            scheduleRerender();
     });
 }
 const head = Symbol("head");
@@ -52,9 +53,7 @@ function componentToVDomRecurse(aFunctionAndItsInputs, vnode) {
     vnode.nthEffect = -1;
     currentVDomNode = vnode;
     let outputFromAFunction = typeof aFunctionAndItsInputs[head] == "function" ? aFunctionAndItsInputs[head].call(vnode.state, aFunctionAndItsInputs) : aFunctionAndItsInputs;
-    if (!outputFromAFunction)
-        return outputFromAFunction;
-    if (typeof outputFromAFunction !== "object")
+    if (!outputFromAFunction || typeof outputFromAFunction !== "object")
         return outputFromAFunction;
     const vnodeInClosure = vnode;
     if (outputFromAFunction instanceof Promise) {
@@ -150,12 +149,12 @@ function onDiff(...newArgs) {
         currentVDomNode.effects = [];
     const i = ++currentVDomNode.nthEffect;
     if (!currentVDomNode.effects[i]) {
-        const newEffect = { oldArgs: [NaN], callback: doNothing };
+        const newEffect = { oldArgs: [NaN], callback: doNothing, state: currentVDomNode.state };
         newEffect.then = (what) => (newEffect.callback = what);
         currentVDomNode.effects[i] = newEffect;
     }
     currentVDomNode.effects[i].newArgs = newArgs;
-    effectsToRun.add(currentVDomNode);
+    effectsToRun.add(currentVDomNode.effects[i]);
     return currentVDomNode.effects[i];
 }
 const onReady = onDiff;

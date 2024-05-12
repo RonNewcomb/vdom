@@ -5,7 +5,7 @@ let topAppComponent: TemplateNoState | undefined = undefined;
 let freshVDom: VDomNodeOrPrimitive = undefined;
 let currentVDomNode: VDomNode;
 let scheduledRerenders = 0;
-let effectsToRun = new Set<VDomNode>();
+let effectsToRun = new Set<EffectHolder<any[], any[]>>();
 let globalState: Record<string | number | symbol, any> = { styles: {} }; // css hack
 
 function start(appComponent: TemplateNoState, rootElement?: HTMLElement | null) {
@@ -27,17 +27,16 @@ function scheduleRerender(): void {
     if (scheduledRerenders) return; // if above line called scheduleRerender(), don't commit to real dom
     const freshElements = vdomToElementsRecurse(freshVDom, document.createElement("div"));
     topAppElement.replaceChildren(freshElements);
-    for (const vdom of effectsToRun)
-      if (vdom.effects)
-        for (const effect of vdom.effects) {
-          const somethingChanged = effect.oldArgs.length != effect.newArgs.length || effect.oldArgs.some((arg, i) => !Object.is(arg, effect.newArgs[i]));
-          if (!somethingChanged) continue;
-          effect.oldArgs = effect.newArgs;
-          const retval = effect.callback(effect.newArgs, vdom.state, scheduleRerender);
-          if (retval instanceof Promise) retval.finally(scheduleRerender);
-          //  scheduleRerender(); // TODO this might be right
-        }
+    let somethingChanged = false;
+    for (const effect of effectsToRun) {
+      if (effect.oldArgs.length === effect.newArgs.length && effect.oldArgs.every((arg, i) => Object.is(arg, effect.newArgs[i]))) continue;
+      somethingChanged = true;
+      effect.oldArgs = effect.newArgs;
+      const retval = effect.callback(effect.newArgs, effect.state, scheduleRerender);
+      if (retval instanceof Promise) retval.finally(scheduleRerender);
+    }
     effectsToRun.clear();
+    if (somethingChanged) scheduleRerender();
   });
 }
 
@@ -79,8 +78,7 @@ function componentToVDomRecurse(aFunctionAndItsInputs: TemplateNoState, vnode?: 
     typeof aFunctionAndItsInputs[head] == "function" ? aFunctionAndItsInputs[head].call(vnode.state, aFunctionAndItsInputs) : aFunctionAndItsInputs;
   // console.log({ shallowdom });
 
-  if (!outputFromAFunction) return outputFromAFunction;
-  if (typeof outputFromAFunction !== "object") return outputFromAFunction;
+  if (!outputFromAFunction || typeof outputFromAFunction !== "object") return outputFromAFunction;
   //if (Array.isArray(outputFromAFunction)) return outputFromAFunction;
   const vnodeInClosure = vnode; // don't put parameter in closure
   if (outputFromAFunction instanceof Promise) {
@@ -147,7 +145,7 @@ function vdomToElementsRecurse(vtree: VDomNodeOrPrimitive, parentElement: Node):
     if (attributeName.startsWith("on")) {
       const eventName = attributeName.slice(2).toLowerCase();
       el.addEventListener(eventName, attributeValue);
-      el.addEventListener(eventName, scheduleRerender);
+      el.addEventListener(eventName, scheduleRerender); // why necessary if somethingChanged->rerender
     } else {
       switch (attributeName) {
         case "innerText":
@@ -190,6 +188,7 @@ type OnEffectHandler<T, R = any> = (args: T, state: IState, rerenderFn: () => vo
 interface EffectHolder<T, R = any> {
   oldArgs: T;
   newArgs: T;
+  state: IState;
   callback: OnEffectHandler<T, R>;
   then: (what: OnEffectHandler<T, R>) => any;
 }
@@ -198,12 +197,12 @@ function onDiff(...newArgs: any[]): EffectHolder<typeof newArgs, any> {
   if (!currentVDomNode.effects) currentVDomNode.effects = [];
   const i = ++currentVDomNode.nthEffect;
   if (!currentVDomNode.effects[i]) {
-    const newEffect = { oldArgs: [NaN], callback: doNothing } as any;
+    const newEffect = { oldArgs: [NaN], callback: doNothing, state: currentVDomNode.state } as any;
     newEffect.then = (what: OnEffectHandler<any[]>) => (newEffect.callback = what);
     currentVDomNode.effects[i] = newEffect;
   }
   currentVDomNode.effects[i].newArgs = newArgs;
-  effectsToRun.add(currentVDomNode);
+  effectsToRun.add(currentVDomNode.effects[i]);
   return currentVDomNode.effects[i];
 }
 const onReady = onDiff;
